@@ -1,0 +1,19 @@
+# Python  
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+build/
+dist/
+wheels/
+*.egg-info
+
+# Environment Variables (Security!)
+.env
+
+# uv
+.python-version
+
+# macOS
+.DS_Store
