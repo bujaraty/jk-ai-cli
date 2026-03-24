@@ -1,0 +1,26 @@
+[project]
+name = "jk-ai-chat"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "click>=8.1.7",
+    "jk-core",
+    "rich>=13.7.0",
+]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+jk-core = { workspace = true, editable = true }
+
+[project.scripts]
+jk-ai-chat = "jk_ai_chat.entrypoints:main_chat"
+jk-ai-init = "jk_ai_chat.entrypoints:init_only"
+jk-ai-edit = "jk_ai_chat.entrypoints:edit_only"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

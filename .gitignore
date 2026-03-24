@@ -12,8 +12,16 @@ wheels/
 # Environment Variables (Security!)
 .env
 
-# uv
-.python-version
-
 # macOS
 .DS_Store
+
+# uv local state
+.uv/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
