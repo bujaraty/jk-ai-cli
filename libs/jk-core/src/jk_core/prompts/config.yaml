@@ -1,0 +1,17 @@
+projects:
+  cli-dev:
+    components:
+      - "01_base/general_expert.md"
+      - "02_roles/cli_dev.md"
+
+  teaching:
+    components:
+      - "01_base/general_expert.md"
+      - "02_roles/professor.md"
+      - "03_modules/syllabus_gen.md"
+      - "04_formats/markdown_report.md"
+    required_vars:
+      - "subject_name"
+      - "learning_objective"
+      - "weeks"
+      - "student_group"

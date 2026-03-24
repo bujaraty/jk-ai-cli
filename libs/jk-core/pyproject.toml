@@ -1,7 +1,11 @@
 [project]
 name = "jk-core"
 version = "0.1.0"
-dependencies = ["platformdirs"]
+dependencies = [
+    "jinja2>=3.1.6",
+    "platformdirs",
+    "pyyaml>=6.0.3",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jk_core"]

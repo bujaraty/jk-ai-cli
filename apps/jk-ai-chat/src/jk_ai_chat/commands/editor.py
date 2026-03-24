@@ -4,11 +4,16 @@ def edit_command():
     """เปิดไฟล์หลักของโปรเจกต์ขึ้นมาแก้ไขพร้อมกันใน Vim"""
     # ลิสต์ไฟล์ที่อยากเปิด (แก้ Path ให้ตรงกับโครงสร้างจริง)
     files_to_edit = [
-        "apps/jk-ai-chat/src/jk_ai_chat/commands/chat.py",
       #  "apps/jk-ai-chat/src/jk_ai_chat/cli.py",
+        "apps/lab/src/lab/test_auto_question.py",
+#        "apps/lab/src/lab/test_prompts.py",
+        "libs/jk-core/src/jk_core/prompt_engine.py",
+        "apps/lab/pyproject.toml",
+        "apps/jk-ai-chat/src/jk_ai_chat/commands/editor.py",
+        "apps/jk-ai-chat/src/jk_ai_chat/commands/chat.py",
+        "tmp.py",
         "libs/jk-core/src/jk_core/constants.py",
         "apps/jk-ai-chat/src/jk_ai_chat/entrypoints.py",
-        "apps/jk-ai-chat/src/jk_ai_chat/commands/editor.py",
         "apps/jk-ai-chat/pyproject.toml",
         "apps/lab/src/lab/gemini_api.py",
     ]

@@ -1,7 +1,15 @@
 [project]
 name = "lab"
 version = "0.1.0"
-dependencies = []
+dependencies = [
+    "jk-core",
+    "jinja2",
+    "pyyaml",
+    "click>=8.3.1",
+]
+
+[tool.uv.sources]
+jk-core = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lab"]
@@ -9,3 +17,4 @@ packages = ["src/lab"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+

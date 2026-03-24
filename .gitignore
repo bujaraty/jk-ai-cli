@@ -1,4 +1,6 @@
 # Python  
+setup_w.sh
+tmp.py
 __pycache__/
 *.py[cod]
 *$py.class
@@ -8,6 +10,9 @@ build/
 dist/
 wheels/
 *.egg-info
+
+# vim
+*.swp
 
 # Environment Variables (Security!)
 .env
