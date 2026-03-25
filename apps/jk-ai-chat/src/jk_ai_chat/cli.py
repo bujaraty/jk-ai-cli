@@ -1,6 +1,5 @@
 import click
 from jk_ai_chat.commands.init import init_command
-from jk_ai_chat.commands.editor import edit_command
 
 @click.group(invoke_without_command=True)
 @click.pass_context
@@ -14,6 +13,3 @@ def cli_group(ctx):
 def init_sub():
     init_command()
 
-@cli_group.command(name="edit")
-def edit_sub():
-    edit_command()

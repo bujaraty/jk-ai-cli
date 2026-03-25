@@ -19,7 +19,6 @@ jk-core = { workspace = true, editable = true }
 [project.scripts]
 jk-ai-chat = "jk_ai_chat.entrypoints:main_chat"
 jk-ai-init = "jk_ai_chat.entrypoints:init_only"
-jk-ai-edit = "jk_ai_chat.entrypoints:edit_only"
 
 [build-system]
 requires = ["hatchling"]
