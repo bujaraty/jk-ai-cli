@@ -1,12 +1,15 @@
-from jk_ai_chat.cli import cli_group
+import click
+from jk_ai_chat.commands.chat import chat_command
 from jk_ai_chat.commands.init import init_command
-from jk_ai_chat.commands.editor import edit_command
 
-def main_chat():
-    """คำสั่ง: jk-ai-chat (เรียกหน้าแรกของ CLI)"""
-    cli_group()
+@click.command()
+@click.option('--proj', default='cli-dev', help='Project profile to use')
+@click.argument('user_input', required=False)
+def main_chat(proj, user_input):
+    """Main Entrypoint: Open AI Chat directly"""
+    chat_command(proj, user_input)
 
 def init_only():
-    """คำสั่ง: jk-ai-init (เรียกเฉพาะการ setup)"""
+    """Main Entrypoint: Initialize system"""
     init_command()
 
