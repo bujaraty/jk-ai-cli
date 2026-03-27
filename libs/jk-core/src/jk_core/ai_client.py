@@ -1,5 +1,4 @@
-# libs/jk-core/src/jk_core/ai_client.py
-from google import genai  # Use the correct namespace
+from google import genai
 from google.genai import types
 from jk_core.key_manager import KeyManager
 from jk_core.constants import DEFAULT_MODEL
@@ -20,13 +19,15 @@ class GeminiClient:
         # Initialize with the correct client class
         self.client = genai.Client(api_key=api_key)
 
-    def generate(self, prompt: str, system_instruction: str = None):
+    def generate(self, prompt: str, system_instruction: str = None, model_name: str = None):
         if not self.client:
             self._refresh_client()
 
+        target_model = model_name or DEFAULT_MODEL
+
         try:
             response = self.client.models.generate_content(
-                model=DEFAULT_MODEL,
+                model=target_model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction

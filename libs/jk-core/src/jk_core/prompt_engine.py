@@ -44,13 +44,11 @@ def assemble_prompt(project_name, variables=None):
     if variables:
         template = Template(raw_prompt)
         return template.render(**variables)
-    
     return raw_prompt
 
 def get_required_vars(project_name):
     """ดึงรายการ required_vars จาก config.yaml"""
     config = load_config()
     project_cfg = config.get("projects", {}).get(project_name, {})
-    print(project_cfg)
     return project_cfg.get("required_vars", [])
 
