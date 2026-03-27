@@ -16,6 +16,7 @@ class GeminiClient:
             raise RuntimeError("All Google API keys are exhausted.")
 
         self.key_id = key_id
+        print(f"🔄 Switched to Key: {self.key_id}")
         # Initialize with the correct client class
         self.client = genai.Client(api_key=api_key)
 

@@ -24,5 +24,5 @@ uv tool install ./apps/jk-ai-chat --force --editable
 hash -r 2>/dev/null || rehash 2>/dev/null
 
 echo "✅ All tools installed successfully!"
-echo "💡 You can now run 'jk-ai-chat', 'jk-ai-init', and 'jk-ai-edit' from anywhere."
+echo "💡 You can now run 'jk-ai-chat', 'jk-ai-init' from anywhere."
 

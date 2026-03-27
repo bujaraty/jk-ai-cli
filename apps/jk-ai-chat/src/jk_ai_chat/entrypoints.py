@@ -9,7 +9,9 @@ def main_chat(proj, user_input):
     """Main Entrypoint: Open AI Chat directly"""
     chat_command(proj, user_input)
 
-def init_only():
-    """Main Entrypoint: Initialize system"""
-    init_command()
+@click.command()
+@click.option('--probe', is_flag=True, help='Perform a full model discovery and health probe')
+def init_only(probe):
+    """Entrypoint for jk-ai-init"""
+    init_command(probe=probe)
 
