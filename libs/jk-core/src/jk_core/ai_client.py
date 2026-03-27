@@ -33,11 +33,58 @@ class GeminiClient:
                     system_instruction=system_instruction
                 ) if system_instruction else None
             )
+            # CHANGE: Extract token counts and record usage
+            meta = response.usage_metadata
+            if meta:
+                self.km.record_usage(
+                    key_id=self.key_id,
+                    model_id=target_model,
+                    input_tokens=meta.prompt_token_count,
+                    output_tokens=meta.candidates_token_count
+                )
             return response.text
         except Exception as e:
             if "429" in str(e) or "quota" in str(e).lower():
                 self.km.mark_exhausted(self.key_id)
                 self._refresh_client()
                 return self.generate(prompt, system_instruction)
+            raise e
+
+
+    def generate_with_meta(self, prompt: str, system_instruction: str = None, model_name: str = None):
+        """
+        Generates content and returns a tuple of (text, usage_metadata).
+        """
+        if not self.client:
+            self._refresh_client()
+
+        target_model = model_name or DEFAULT_MODEL
+
+        try:
+            response = self.client.models.generate_content(
+                model=target_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction
+                ) if system_instruction else None
+            )
+
+            meta = response.usage_metadata
+            if meta:
+                self.km.record_usage(
+                    key_id=self.key_id,
+                    model_id=target_model,
+                    input_tokens=meta.prompt_token_count,
+                    output_tokens=meta.candidates_token_count
+                )
+
+            return response.text, meta
+
+        except Exception as e:
+            # Handle rotation logic as before...
+            if "429" in str(e) or "quota" in str(e).lower():
+                self.km.mark_exhausted(self.key_id)
+                self._refresh_client()
+                return self.generate_with_meta(prompt, system_instruction, model_name)
             raise e
 

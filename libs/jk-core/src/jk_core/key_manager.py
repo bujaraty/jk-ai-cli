@@ -103,3 +103,38 @@ class KeyManager:
         }
         self._save_state(state)
 
+    # libs/jk-core/src/jk_core/key_manager.py
+
+    def record_usage(self, key_id: str, model_id: str, input_tokens: int, output_tokens: int):
+        """
+        CHANGE: Increments request and token counts for a specific key/model pair.
+        Stored in state.json under a 'usage' key.
+        """
+        state = self._load_state()
+        
+        # Ensure the 'usage' section exists
+        if "usage" not in state:
+            state["usage"] = {}
+        if key_id not in state["usage"]:
+            state["usage"][key_id] = {"models": {}}
+            
+        models_usage = state["usage"][key_id]["models"]
+        
+        # Initialize or update the specific model entry
+        if model_id not in models_usage:
+            models_usage[model_id] = {
+                "request_count": 0,
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+                "last_used": None
+            }
+            
+        entry = models_usage[model_id]
+        entry["request_count"] += 1
+        entry["total_input_tokens"] += input_tokens
+        entry["total_output_tokens"] += output_tokens
+        entry["last_used"] = datetime.now(timezone.utc).isoformat()
+        
+        self._save_state(state)
+
+

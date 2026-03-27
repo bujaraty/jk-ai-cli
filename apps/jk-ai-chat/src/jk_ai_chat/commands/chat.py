@@ -1,6 +1,7 @@
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
+from rich.columns import Columns
 from jk_core.prompt_engine import assemble_prompt, get_required_vars
 from jk_core.ai_client import GeminiClient
 from jk_core.orchestrator import Orchestrator
@@ -32,9 +33,7 @@ def chat_command(proj, user_input, tier="normal", latest=False):
     console.print(Panel(model_info, title="[bold magenta]Selection Logic[/bold magenta]", expand=False))
 
     # 2. INITIALIZE CLIENT
-    # We initialize it early so we can get the key name for the prompt
     client = GeminiClient(tier="free")
-    # Trigger the first key fetch if not already done
     try:
         client._refresh_client()
     except Exception as e:
@@ -47,22 +46,58 @@ def chat_command(proj, user_input, tier="normal", latest=False):
     for var in required:
         variables[var] = console.input(f"[bold yellow]Enter {var.replace('_', ' ').title()}: [/bold yellow]")
     system_instruction = assemble_prompt(proj, variables=variables)
+#
+#    # 4. INTERACTION
+#    if not user_input:
+#        key_label = f"({client.key_id})" if client.key_id else ""
+#        user_input = console.input(f"[bold cyan]You {key_label} > [/bold cyan]")
 
-    # 4. INTERACTION
-    if not user_input:
-        key_label = f"({client.key_id})" if client.key_id else ""
-        user_input = console.input(f"[bold cyan]You {key_label} > [/bold cyan]")
 
-    # 4. EXECUTION
-    with console.status(f"[bold yellow]Thinking...[/bold yellow]"):
-        try:
-            # Note: We need to update GeminiClient.generate to accept a model name!
-            response = client.generate(
-                prompt=user_input,
-                system_instruction=system_instruction,
-                model_name=model_id # <--- Pass the chosen model
-            )
-            console.print(f"\n[bold green]AI > [/bold green]{response}\n")
-        except Exception as e:
-            console.print(f"[bold red]Error:[/bold red] {e}")
+    while True:
+        if not user_input:
+            user_input = console.input(f"[bold cyan]You ({client.key_id}) > [/bold cyan]")
+
+        if user_input.lower() in ["exit", "quit", "/bye"]:
+            break
+
+        with console.status("[bold yellow]Thinking..."):
+            try:
+                response_text, meta = client.generate_with_meta(
+                    prompt=user_input,
+                    system_instruction=system_instruction,
+                    model_name=model_id
+                )
+
+                console.print(f"\n[bold green]AI ({client.key_id}) > [/bold green]{response_text}\n")
+
+                # --- NEW: Last Request vs. Accumulated Statistics ---
+                # 1. Fetch the updated state from disk
+                state = client.km._load_state()
+                acc = state.get("usage", {}).get(client.key_id, {}).get("models", {}).get(model_id, {})
+
+                # 2. Build Last Request Panel
+                last_req_info = (
+                    f"In:  [green]{meta.prompt_token_count}[/green]\n"
+                    f"Out: [blue]{meta.candidates_token_count}[/blue]\n"
+                    f"Tot: [yellow]{meta.total_token_count}[/yellow]"
+                )
+                p1 = Panel(last_req_info, title="[bold]Last Request[/bold]", border_style="dim", expand=False)
+
+                # 3. Build Accumulated Panel (Global)
+                acc_info = (
+                    f"Reqs: [magenta]{acc.get('request_count', 0)}[/magenta]\n"
+                    f"In:   [green]{acc.get('total_input_tokens', 0)}[/green]\n"
+                    f"Out:  [blue]{acc.get('total_output_tokens', 0)}[/blue]"
+                )
+                p2 = Panel(acc_info, title="[bold]Accumulated (Global)[/bold]", border_style="dim", expand=False)
+
+                # 4. Display side-by-side
+                console.print(Columns([p1, p2]))
+                # ----------------------------------------------------
+
+                user_input = None # Clear for next loop iteration
+
+            except Exception as e:
+                console.print(f"[bold red]Error:[/bold red] {e}")
+                break
 
