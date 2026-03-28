@@ -115,21 +115,21 @@ class ChatRouter:
         Lists named sessions and loads the selected one.
         Usage: /resume [session_number_or_id]
         """
-        meta = self.session._load_metadata()
-        if not meta:
+        recent = self.session.get_recent_sessions(limit=20)
+        if not recent:
             console.print("[yellow]No saved sessions found. Use /name first.[/yellow]")
             return
 
         # 1. If no ID provided, show the list
         if not args:
-            table = Table(title="Saved Sessions", show_lines=True)
+            table = Table(title="🕒 Recently Active Sessions (Top 20)", show_lines=True)
             table.add_column("No.", justify="center", style="dim")
             table.add_column("Session ID", style="cyan")
             table.add_column("Name", style="bold yellow")
 
             # Map index to ID for easy selection
             self._session_map = {}
-            for i, (sess_id, info) in enumerate(meta.items(), 1):
+            for i, (sess_id, info) in enumerate(recent, 1):
                 self._session_map[str(i)] = sess_id
                 table.add_row(str(i), sess_id, info['name'])
 
@@ -139,13 +139,35 @@ class ChatRouter:
 
         # 2. Try to load by Number or ID
         target_id = args[0]
-        # Check if user typed a number from the map
         if hasattr(self, '_session_map') and target_id in self._session_map:
             target_id = self._session_map[target_id]
 
         if self.session.load(target_id):
             console.print(f"✅ [bold green]Resumed session:[/bold green] {self.session.display_name}")
-            console.print(f"[dim]History: {len(self.session.history)} messages loaded.[/dim]")
+            # UPDATE: Pull last 5 exchanges (10 messages)
+            last_turns = self.session.get_last_turns(n=5)
+            if last_turns:
+                console.print("\n[bold dim]📜 Recent context (Last 5 exchanges):[/bold dim]")
+                for turn in last_turns:
+                    role_name = "You" if turn['role'] == "user" else "AI"
+                    role_color = "cyan" if turn['role'] == "user" else "green"
+
+                    # 1. Access the first element of parts
+                    content_raw = turn['parts'][0].strip().replace("\n", " ")
+
+                    if len(content_raw) > 80:
+                        content_raw = content_raw[:77] + "..."
+
+                    # 2. CHANGE: Use a Text object to prevent MarkupError
+                    # This tells Rich: "Don't look for [tags] in the content_raw"
+                    line = Text.assemble(
+                        (f" {role_name:3}: ", f"bold {role_color}"),
+                        (content_raw, "default")
+                    )
+                    console.print(line)
+                console.print("") # Spacing
+
+            console.print(f"[dim]Total History: {len(self.session.history)} messages loaded.[/dim]")
         else:
             console.print(f"[bold red]Error:[/bold red] Session ID '{target_id}' not found.")
 
@@ -230,7 +252,9 @@ def chat_command(proj, user_input, tier="normal", latest=False):
     router = ChatRouter(client, orch, session)
     while True:
         if not user_input:
-            user_input = console.input(f"[bold cyan]You ({client.key_id}) > [/bold cyan]")
+            prompt_label = f"[bold cyan]You ({client.key_id} | {session.display_name}) > [/bold cyan]"
+            user_input = console.input(prompt_label)
+
         # CHECK FOR COMMANDS
         if router.handle(user_input):
             user_input = None # Clear input and continue loop
@@ -244,13 +268,31 @@ def chat_command(proj, user_input, tier="normal", latest=False):
                     system_instruction=session.system_instruction,
                     model_name=model_id
                 )
-#                response_text, meta = client.generate_with_meta(
-#                    prompt=user_input,
-#                    system_instruction=system_instruction,
-#                    model_name=model_id
-#                )
-                console.print(f"\n[bold green]AI ({client.key_id}) > [/bold green]{response_text}\n")
                 session.add_message("model", response_text)
+                console.print(f"\n[bold green]AI ({client.key_id}) > [/bold green]{response_text}\n")
+                # --- NEW: Milestone 2 - Auto-Naming Logic ---
+                if session.is_eligible_for_autoname():
+                    # Use a fast 'lite' model for background tasks to save quota/time
+                    with console.status("[dim]Generating session name...[/dim]"):
+                        # We create a specific naming prompt based on the first pair
+                        naming_prompt = (
+                            "Summarize the user's intent in this conversation in "
+                            "exactly 3 to 5 words. No punctuation. "
+                            f"\nUser: {session.history[0]['parts'][0]}"
+                            f"\nAI: {response_text[:100]}"
+                        )
+
+                        # Generate the title
+                        title, _ = client.generate_with_meta(
+                            prompt=naming_prompt,
+                            system_instruction="You are a professional filing clerk. Give only the title.",
+                            model_name=model_id # Or a lite model if you prefer
+                        )
+
+                        clean_title = title.strip().replace('"', '')
+                        session.set_display_name(clean_title)
+                        console.print(f"[dim]🏷️  Session auto-named: [bold]{clean_title}[/bold][/dim]")
+                # --------------------------------------------
                 # 1. Fetch the updated state from disk
                 state = client.km._load_state()
                 acc = state.get("usage", {}).get(client.key_id, {}).get("models", {}).get(model_id, {})
@@ -279,5 +321,6 @@ def chat_command(proj, user_input, tier="normal", latest=False):
 
             except Exception as e:
                 console.print(f"[bold red]Error:[/bold red] {e}")
-                break
+                session.history.pop()
+                user_input = None
 
