@@ -1,4 +1,5 @@
 import sys
+import click
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -21,10 +22,15 @@ class ChatRouter:
         self.client = client
         self.orch = orchestrator
         self.session = session_manager
+        self._session_map = {}
+        self._edit_map = {} # CHANGE: Initialize the map here
 
     def handle(self, text: str) -> bool:
         """
-        Routes commands. Returns True if handled, False if it's a regular message.
+        Returns:
+            - True: If a standard command was handled.
+            - dict: If a Replay is triggered (contains future prompts).
+            - False: If it's a regular message.
         """
         clean_text = text.strip().lower()
 
@@ -43,6 +49,7 @@ class ChatRouter:
         commands = {
             "/branch": self.cmd_branch,
             "/copy": self.cmd_copy,
+            "/edit": self.cmd_edit,
             "/latest": self.cmd_toggle_latest,
             "/model": self.cmd_model_info,
             "/name": self.cmd_name,
@@ -61,19 +68,106 @@ class ChatRouter:
 
         func = commands.get(cmd)
         if func:
-            func(args)
+            return func(args)
         else:
             console.print(f"[bold red]Unknown command:[/bold red] {cmd}")
-
         return True
 
     def cmd_branch(self, args):
         new_id = self.session.branch()
         console.print(f"[bold magenta]🌿 Branched to new session: {new_id}[/bold magenta]")
+        return True
 
     def cmd_copy(self, args):
         """Copies the most recent AI response to the system clipboard."""
-        pass
+        return True
+
+    def cmd_edit(self, args):
+        """Allows editing a past prompt with sequential numbering."""
+        # 1. Map Display Number -> Real Index
+        # This ensures users type '1', '2', '3' regardless of AI turns
+        display_to_real = {}
+        counter = 1
+
+        if not args:
+            table = Table(title="📜 History Timeline (Exchanges)", show_lines=True)
+            # CHANGE: Explicitly add column names
+            table.add_column("No.", justify="center", style="dim")
+            table.add_column("Role", style="bold magenta")
+            table.add_column("Content Preview", style="cyan")
+
+            for real_idx, turn in enumerate(self.session.history):
+                if turn['role'] == "user":
+                    # CHANGE: Ensure we extract the string from the list ['text']
+                    parts = turn.get('parts', [""])
+                    raw_content = parts[0] if isinstance(parts, list) else parts
+
+                    # Now we can safely call .replace() on the string
+                    content = raw_content.replace("\n", " ")
+
+                    if len(content) > 50:
+                        content = content[:47] + "..."
+
+                    self._edit_map[str(counter)] = real_idx
+                    table.add_row(str(counter), "YOU", content)
+                    counter += 1
+
+            # Store the map in the router instance so the next call can use it
+            self._edit_map = display_to_real
+
+            console.print(table)
+            console.print("[dim]Usage: /edit [No.] to travel back to that point.[/dim]")
+            return True
+
+        # 2. Pick the index using the map
+        display_idx = args[0]
+        if hasattr(self, '_edit_map') and display_idx in self._edit_map:
+            real_idx = self._edit_map[display_idx]
+        else:
+            # Fallback to raw index if not in map (or if user knows what they're doing)
+            try:
+                real_idx = int(display_idx)
+            except ValueError:
+                console.print("[red]Invalid selection.[/red]")
+                return True
+
+        # 3. Capture future prompts before truncating
+        # We look for all 'user' turns that happen AFTER the real_idx
+        idx = int(real_idx) # Ensure it's an int
+        future_prompts = [m for m in self.session.history[idx+1:] if m['role'] == "user"]
+
+        # CHANGE: Extract the string from the list ['text']
+        parts = self.session.history[idx]['parts']
+        original_text = parts[0] if isinstance(parts, list) else parts
+
+        # 4. Open system editor
+        new_text = click.edit(original_text)
+        if not new_text or new_text.strip() == original_text.strip():
+            console.print("[yellow]No changes saved.[/yellow]")
+            return True
+
+        # 5. Strategy Selection
+        console.print("\n[bold magenta]🕰️ TIME TRAVEL INITIALIZED[/bold magenta]")
+        choice = click.prompt(
+            "Strategy", type=click.Choice(['t', 'r', 'b']), default='t',
+            prompt_suffix="\n [t] Truncate\n [r] Replay\n [b] Branch & Truncate\n Choice: "
+        )
+
+        if choice == 'b':
+            self.session.branch()
+
+        # Perform the actual cut/edit in SessionManager
+        self.session.time_travel(real_idx, new_text.strip())
+
+        if choice in ['t', 'b']:
+            return {"replay": True, "prompts": []}
+
+        if choice == 'r':
+            return {"replay": True, "prompts": future_prompts}
+
+
+        console.print("✅ History updated.")
+        return True
 
     def cmd_exit(self, args):
         """Terminates the application gracefully."""
@@ -83,17 +177,18 @@ class ChatRouter:
 
     def cmd_model_info(self, args):
         """Shows detailed metadata of the currently active model."""
-        pass
+        return True
 
     def cmd_name(self, args):
         """/name [Session Name]: Sets the display name for current session."""
         if not args:
             console.print("[red]Usage: /name My Awesome Chat[/red]")
-            return
+            return True
 
         new_name = " ".join(args)
         self.session.set_display_name(new_name)
         console.print(f"🏷️  Session renamed to: [bold yellow]{new_name}[/bold yellow]")
+        return True
 
     def cmd_new_chat(self, args):
         """
@@ -101,14 +196,16 @@ class ChatRouter:
         Saves the current session to a file and starts a fresh one with a new ID.
         """
         console.print("[bold blue]Starting a new chat session...[/bold blue]")
+        return True
 
     def cmd_paste(self, args):
         """Simulates a multi-line paste or injects a file into the prompt."""
-        pass
+        return True
 
     def cmd_reset(self, args):
         self.session.clear()
         console.print("[bold green]🧹 Session history cleared.[/bold green]")
+        return True
 
     def cmd_resume(self, args):
         """
@@ -118,7 +215,7 @@ class ChatRouter:
         recent = self.session.get_recent_sessions(limit=20)
         if not recent:
             console.print("[yellow]No saved sessions found. Use /name first.[/yellow]")
-            return
+            return True
 
         # 1. If no ID provided, show the list
         if not args:
@@ -127,7 +224,6 @@ class ChatRouter:
             table.add_column("Session ID", style="cyan")
             table.add_column("Name", style="bold yellow")
 
-            # Map index to ID for easy selection
             self._session_map = {}
             for i, (sess_id, info) in enumerate(recent, 1):
                 self._session_map[str(i)] = sess_id
@@ -135,7 +231,7 @@ class ChatRouter:
 
             console.print(table)
             console.print("[dim]Type '/resume [No.]' to load a session.[/dim]")
-            return
+            return True
 
         # 2. Try to load by Number or ID
         target_id = args[0]
@@ -144,79 +240,70 @@ class ChatRouter:
 
         if self.session.load(target_id):
             console.print(f"✅ [bold green]Resumed session:[/bold green] {self.session.display_name}")
-            # UPDATE: Pull last 5 exchanges (10 messages)
             last_turns = self.session.get_last_turns(n=5)
             if last_turns:
                 console.print("\n[bold dim]📜 Recent context (Last 5 exchanges):[/bold dim]")
                 for turn in last_turns:
                     role_name = "You" if turn['role'] == "user" else "AI"
                     role_color = "cyan" if turn['role'] == "user" else "green"
-
-                    # 1. Access the first element of parts
                     content_raw = turn['parts'][0].strip().replace("\n", " ")
 
                     if len(content_raw) > 80:
                         content_raw = content_raw[:77] + "..."
 
-                    # 2. CHANGE: Use a Text object to prevent MarkupError
-                    # This tells Rich: "Don't look for [tags] in the content_raw"
                     line = Text.assemble(
                         (f" {role_name:3}: ", f"bold {role_color}"),
                         (content_raw, "default")
                     )
                     console.print(line)
-                console.print("") # Spacing
+                console.print("")
 
             console.print(f"[dim]Total History: {len(self.session.history)} messages loaded.[/dim]")
         else:
             console.print(f"[bold red]Error:[/bold red] Session ID '{target_id}' not found.")
+        return True
 
     def cmd_retry(self, args):
         """Deletes the last AI response and resends the last user prompt."""
-        pass
+        return True
 
     def cmd_save(self, args):
         """Exports the current conversation to a Markdown file."""
-        pass
+        return True
 
     def cmd_set_temp(self, args):
         """Adjusts the generation temperature (0.0 to 2.0)."""
-        pass
+        return True
 
     def cmd_stats(self, args):
         """Displays accumulated usage statistics for all keys/models."""
         # Implementation: Call your existing check_usage logic
-        pass
+        return True
 
     def cmd_switch_proj(self, args):
         """Swaps the Project Profile (Modular Prompts) for the next request."""
-        pass
+        return True
 
     def cmd_switch_tier(self, args):
         """Changes the Orchestrator tier (lite/normal/high) mid-session."""
         if args:
             self.orch.tier = args[0]
             console.print(f"✅ Tier switched to: [bold]{args[0]}[/bold]")
+        return True
 
     def cmd_toggle_latest(self, args):
         """Toggles the 'prefer_latest' flag in the Orchestrator."""
         self.orch.prefer_latest = not self.orch.prefer_latest
         console.print(f"✨ Prefer Latest: [bold]{self.orch.prefer_latest}[/bold]")
+        return True
 
     def cmd_undo(self, args):
         """Removes the last exchange (User + AI) from history."""
         self.session.undo()
         console.print("↩️  Last exchange removed from session.")
-
+        return True
 
 def chat_command(proj, user_input, tier="normal", latest=False):
-    """
-    Main Chat Logic:
-    1. Orchestrator picks the best model based on Tier and Version flags.
-    2. Prompt Engine assembles the Modular Prompt.
-    3. GeminiClient sends the request.
-    """
-    # 1. ORCHESTRATION: Pick the model automatically
     orch = Orchestrator(provider="google", tier=tier, prefer_latest=latest)
     rankings = orch.get_rankings(action="generateContent")
     if not rankings:
@@ -250,25 +337,76 @@ def chat_command(proj, user_input, tier="normal", latest=False):
 
     session = SessionManager(system_instruction=system_instruction)
     router = ChatRouter(client, orch, session)
+
+    def generate_with_fallback(current_history):
+        # CHANGE: Iterate through all ranked candidates if the top one is exhausted
+        for model_entry in rankings:
+            target_mid = model_entry['id']
+            try:
+                # We show which model is currently being attempted
+                with console.status(f"[bold yellow]Thinking ({target_mid.split('/')[-1]})..."):
+                    return client.generate_with_history(
+                        history=current_history,
+                        system_instruction=session.system_instruction,
+                        model_name=target_mid
+                    ), target_mid
+            except PermissionError as e:
+                if "MODEL_EXHAUSTED" in str(e):
+                    console.print(f"[dim yellow]⚠️  {target_mid} exhausted on all keys. Falling back...[/dim yellow]")
+                    continue
+                raise e
+        raise RuntimeError("All available models and keys are truly exhausted.")
+
     while True:
         if not user_input:
             prompt_label = f"[bold cyan]You ({client.key_id} | {session.display_name}) > [/bold cyan]"
             user_input = console.input(prompt_label)
 
-        # CHECK FOR COMMANDS
-        if router.handle(user_input):
-            user_input = None # Clear input and continue loop
+        cmd_result = router.handle(user_input)
+        if isinstance(cmd_result, dict) and cmd_result.get("replay"):
+            future_prompts = cmd_result["prompts"]
+            # STEP A: Generate the FIRST response for the newly edited prompt
+            try:
+                # CHANGE: Applied fallback logic to Replay Step A
+                (resp, meta), used_mid = generate_with_fallback(session.history)
+                session.add_message("model", resp, model_id=used_mid)
+                console.print(f"[bold green]AI ({client.key_id} | {used_mid.split('/')[-1]}) > [/bold green]{resp}\n")
+            except Exception as e:
+                console.print(f"[bold red]Replay Error:[/bold red] {e}")
+                user_input = None; continue
+
+            console.print(Panel("[bold yellow]🔄 REPLAY MODE ACTIVATED[/bold yellow]\nRegenerating conversation from the edited point...", border_style="yellow"))
+
+            # STEP B: Replay the REST of the conversation
+            for i, p_turn in enumerate(future_prompts, 1):
+                p_text = p_turn['parts'][0] if isinstance(p_turn['parts'], list) else p_turn['parts']
+                p_model = p_turn.get("metadata", {}).get("model", model_id)
+
+                console.print(f"[bold cyan]You (Replay {i}/{len(future_prompts)}) > [/bold cyan]{p_text}")
+                session.add_message("user", p_text)
+
+                try:
+                    # CHANGE: Applied fallback logic to Replay Step B
+                    (resp, meta), used_mid = generate_with_fallback(session.history)
+                    session.add_message("model", resp, model_id=used_mid)
+                    console.print(f"[bold green]AI ({client.key_id} | {used_mid.split('/')[-1]}) > [/bold green]{resp}\n")
+                except Exception as e:
+                    console.print(f"[bold red]Replay Error:[/bold red] {e}")
+                    break
+
+            console.print("[bold green]✨ Replay complete. Timeline is now consistent.[/bold green]\n")
+            user_input = None
+            continue
+        elif cmd_result:
+            user_input = None
             continue
 
         session.add_message("user", user_input)
         with console.status("[bold yellow]Thinking..."):
             try:
-                response_text, meta = client.generate_with_history(
-                    history=session.history, # <--- The full list from JSONL
-                    system_instruction=session.system_instruction,
-                    model_name=model_id
-                )
-                session.add_message("model", response_text)
+                # CHANGE: Applied fallback logic to Normal Prompt execution
+                (response_text, meta), used_mid = generate_with_fallback(session.history)
+                session.add_message("model", response_text, model_id=model_id)
                 console.print(f"\n[bold green]AI ({client.key_id}) > [/bold green]{response_text}\n")
                 # --- NEW: Milestone 2 - Auto-Naming Logic ---
                 if session.is_eligible_for_autoname():

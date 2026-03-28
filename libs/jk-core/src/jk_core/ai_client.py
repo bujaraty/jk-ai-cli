@@ -93,18 +93,16 @@ class GeminiClient:
             self._refresh_client()
 
         target_model = model_name or DEFAULT_MODEL
-
-        # CHANGE: Properly extract the text from our list-based structure
         formatted_history = []
         for turn in history:
-            # turn["parts"] is a list, e.g., ["Hello"]
-            # We take index 0 to get the string
-            text_content = turn["parts"][0]
+            raw_parts = turn.get("parts", [""])
+            # If it's a list, take the first element; otherwise, use as is
+            text_str = raw_parts[0] if isinstance(raw_parts, list) else str(raw_parts)
 
             formatted_history.append(
                 types.Content(
                     role=turn["role"],
-                    parts=[types.Part(text=text_content)]
+                    parts=[types.Part(text=text_str)] # Now it's a valid string
                 )
             )
 
@@ -126,9 +124,16 @@ class GeminiClient:
             return response.text, meta
 
         except Exception as e:
-            if "429" in str(e) or "quota" in str(e).lower():
-                self.km.mark_exhausted(self.key_id)
-                self._refresh_client()
-                return self.generate_with_history(history, system_instruction, model_name)
+            error_str = str(e).lower()
+            # 429 = Quota/Rate Limit
+            if "429" in error_str or "quota" in error_str:
+                # 1. First, try to rotate KEY for the SAME model
+                try:
+                    self.km.mark_exhausted(self.key_id) # Mark current key/model pair (Logic needed in KM)
+                    self._refresh_client()
+                    return self.generate_with_history(history, system_instruction, target_model)
+                except RuntimeError:
+                    # 2. If NO KEYS left for this model, raise a specific error to trigger MODEL rotation
+                    raise PermissionError(f"MODEL_EXHAUSTED:{target_model}")
             raise e
 

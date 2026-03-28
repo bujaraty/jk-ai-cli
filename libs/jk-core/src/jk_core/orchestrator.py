@@ -16,8 +16,6 @@ class Orchestrator:
         self.prefer_latest = prefer_latest
         self.cache_file = Path(SHARED_CONFIG_PATH) / "models_cache.json"
 
-
-
     def _load_cache(self) -> list:
         if not self.cache_file.exists():
             return []
@@ -90,8 +88,8 @@ class Orchestrator:
 
         # 5. Give a little higher priority to the newest model
         if "preview" in model_id:
-            score += 2
-            reasons.append("+2 Preview")
+            score -= 2
+            reasons.append("-2 Preview is too popular")
 
         return {"total": score, "reasons": reasons}
 

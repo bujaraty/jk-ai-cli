@@ -36,8 +36,6 @@ class SessionManager:
         with open(self.metadata_file, "w") as f:
             json.dump(data, f, indent=2)
 
-    # CHANGE: Logic consolidated to update the global index (metadata.json)
-    # with the latest count and timestamp for high-speed /resume listing.
     def _update_meta_entry(self):
         """Internal helper to sync current session stats to metadata.json index."""
         meta = self._load_metadata()
@@ -48,8 +46,13 @@ class SessionManager:
         }
         self._save_metadata(meta)
 
-    def add_message(self, role: str, text: str):
-        self.history.append({"role": role, "parts": [text]})
+    def add_message(self, role: str, text: str, model_id: str = None):
+        message = {
+            "role": role,
+            "parts": [text],
+            "metadata": {"model": model_id} if model_id else {}
+        }
+        self.history.append(message)
         self.save()
 
     def branch(self):
@@ -117,6 +120,18 @@ class SessionManager:
             "system_instruction": self.system_instruction
         }
         self._save_metadata(meta)
+
+    def time_travel(self, index: int, new_text: str):
+        """
+        Milestone 5: Resets history to a clean state starting at the edit.
+        """
+        # 1. Truncate EVERYTHING from the edit point onwards
+        # If we edit index 2, self.history becomes [0, 1]
+        self.history = self.history[:index]
+
+        # 2. Re-insert the EDITED user message as the new 'latest' message
+        # This ensures the next response from AI will be 'model' role
+        self.add_message("user", new_text)
 
     def undo(self):
         """Removes the last exchange from memory and REWRITES the .jsonl."""
