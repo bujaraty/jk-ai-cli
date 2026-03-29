@@ -9,6 +9,26 @@ class GeminiClient:
         self.client = None
         self.key_id = None
 
+    def _execute_with_retry(self, fn, model_id: str):
+        """Executes fn(), rotating keys on 429 up to len(keys) times."""
+        max_attempts = len(self.km._load_keys()) or 3
+        for attempt in range(max_attempts):
+            try:
+                if not self.client:
+                    self._refresh_client(model_id=model_id)
+                return fn()
+            except Exception as e:
+                error_str = str(e).lower()
+                if "429" in error_str or "quota" in error_str:
+                    self.km.mark_exhausted(self.key_id, model_id)
+                    try:
+                        self._refresh_client(model_id=model_id)
+                    except PermissionError:
+                        raise PermissionError(f"MODEL_EXHAUSTED:{model_id}")
+                else:
+                    raise e
+        raise PermissionError(f"MODEL_EXHAUSTED:{model_id}")
+
     def _refresh_client(self, model_id: str = None):
         # CHANGE: Pass the model_id to get_available_key
         api_key, key_id = self.km.get_available_key(model_id=model_id)
@@ -21,13 +41,9 @@ class GeminiClient:
         # Initialize with the correct client class
         self.client = genai.Client(api_key=api_key)
 
-    def generate(self, prompt: str, system_instruction: str = None, model_name: str = None):
-        if not self.client:
-            self._refresh_client()
-
+    def generate(self, prompt, system_instruction=None, model_name=None):
         target_model = model_name or DEFAULT_MODEL
-
-        try:
+        def fn():
             response = self.client.models.generate_content(
                 model=target_model,
                 contents=prompt,
@@ -35,36 +51,18 @@ class GeminiClient:
                     system_instruction=system_instruction
                 ) if system_instruction else None
             )
-            # CHANGE: Extract token counts and record usage
             meta = response.usage_metadata
             if meta:
-                self.km.record_usage(
-                    key_id=self.key_id,
-                    model_id=target_model,
-                    input_tokens=meta.prompt_token_count,
-                    output_tokens=meta.candidates_token_count
-                )
+                self.km.record_usage(self.key_id, target_model,
+                                     meta.prompt_token_count,
+                                     meta.candidates_token_count)
             return response.text
-        except Exception as e:
-            if "429" in str(e) or "quota" in str(e).lower():
-                # CHANGE: Pass both key and model
-                self.km.mark_exhausted(self.key_id, target_model)
-                # CHANGE: Pass model_id to only find keys with quota for THIS model
-                self._refresh_client(model_id=target_model)
-                return self.generate(prompt, system_instruction, model_name=target_model)
-            raise e
-
-
-    def generate_with_meta(self, prompt: str, system_instruction: str = None, model_name: str = None):
-        """
-        Generates content and returns a tuple of (text, usage_metadata).
-        """
-        if not self.client:
-            self._refresh_client()
-
+        return self._execute_with_retry(fn, target_model)
+    
+    
+    def generate_with_meta(self, prompt, system_instruction=None, model_name=None):
         target_model = model_name or DEFAULT_MODEL
-
-        try:
+        def fn():
             response = self.client.models.generate_content(
                 model=target_model,
                 contents=prompt,
@@ -72,51 +70,29 @@ class GeminiClient:
                     system_instruction=system_instruction
                 ) if system_instruction else None
             )
-
             meta = response.usage_metadata
             if meta:
-                self.km.record_usage(
-                    key_id=self.key_id,
-                    model_id=target_model,
-                    input_tokens=meta.prompt_token_count,
-                    output_tokens=meta.candidates_token_count
-                )
-
+                self.km.record_usage(self.key_id, target_model,
+                                     meta.prompt_token_count,
+                                     meta.candidates_token_count)
             return response.text, meta
-
-        except Exception as e:
-            if "429" in str(e) or "quota" in str(e).lower():
-                # CHANGE: Pass both key and model
-                self.km.mark_exhausted(self.key_id, target_model)
-                # CHANGE: Pass model_id
-                self._refresh_client(model_id=target_model)
-                return self.generate_with_meta(prompt, system_instruction, model_name=target_model)
-            raise e
-
-    def generate_with_history(self, history: list, system_instruction: str = None, model_name: str = None):
-        if not self.client:
-            self._refresh_client()
-
+        return self._execute_with_retry(fn, target_model)
+    
+    def generate_with_history(self, history, system_instruction=None, model_name=None):
         target_model = model_name or DEFAULT_MODEL
-        formatted_history = []
-        for turn in history:
-            raw_parts = turn.get("parts", [""])
-            # If it's a list, take the first element; otherwise, use as is
-            text_str = raw_parts[0] if isinstance(raw_parts, list) else str(raw_parts)
-
-            formatted_history.append(
-                types.Content(
-                    role=turn["role"],
-                    parts=[types.Part(text=text_str)] # Now it's a valid string
-                )
+        formatted_history = [
+            types.Content(
+                role=turn["role"],
+                parts=[types.Part(text=(turn.get("parts", [""])[0]
+                                        if isinstance(turn.get("parts"), list)
+                                        else str(turn.get("parts", ""))))]
             )
-
-        try:
-            # If formatted_history is empty, the SDK throws 'contents are required'
-            # We must ensure there is at least one message
-            if not formatted_history:
-                raise ValueError("No history provided for generation.")
-
+            for turn in history
+        ]
+        if not formatted_history:
+            raise ValueError("No history provided for generation.")
+    
+        def fn():
             response = self.client.models.generate_content(
                 model=target_model,
                 contents=formatted_history,
@@ -124,23 +100,9 @@ class GeminiClient:
                     system_instruction=system_instruction
                 ) if system_instruction else None
             )
-
             meta = response.usage_metadata
             return response.text, meta
-
-        except Exception as e:
-            error_str = str(e).lower()
-            if "429" in error_str or "quota" in error_str:
-                try:
-                    # CHANGE: Pass both key and model
-                    self.km.mark_exhausted(self.key_id, target_model)
-                    # CHANGE: Pass model_id
-                    self._refresh_client(model_id=target_model)
-                    return self.generate_with_history(history, system_instruction, target_model)
-                except (RuntimeError, PermissionError):
-                    # CHANGE: Re-raise specifically if no keys are left for THIS model
-                    raise PermissionError(f"MODEL_EXHAUSTED:{target_model}")
-            raise e
+        return self._execute_with_retry(fn, target_model)
 
     def embed_content(self, text: str, model_name: str = "models/gemini-embedding-001", task_type: str = "RETRIEVAL_QUERY"):
         """
