@@ -42,7 +42,9 @@ class KeyManager:
 
     def get_available_key(self, model_id: str = None):
         """
-        REFACTORED: Now checks if the specific MODEL is exhausted on a key.
+        Returns an available (key, key_id) pair.
+        If model_id is provided, skips keys where that specific model is exhausted.
+        If model_id is None (e.g. during probing), only checks that the key exists.
         Returns: (api_key_string, key_id_string) or (None, None)
         """
         all_keys = self._load_keys()
@@ -52,25 +54,24 @@ class KeyManager:
         for k in all_keys:
             key_id = k.get('id')
             key_val = k.get('key')
-            if not key_id or not key_val: continue
+            if not key_id or not key_val:
+                continue
 
-            # CHANGE: Look for exhaustion inside the 'usage' block for this specific model
-            model_usage = state.get("usage", {}).get(key_id, {}).get("models", {}).get(model_id, {})
-            reset_at_str = model_usage.get("reset_at")
+            # Skip model-level exhaustion check when no model_id is given (probe mode)
+            if model_id is not None:
+                model_usage = state.get("usage", {}).get(key_id, {}).get("models", {}).get(model_id, {})
+                reset_at_str = model_usage.get("reset_at")
 
-            if reset_at_str:
-                try:
-                    reset_at = datetime.fromisoformat(reset_at_str)
-                    if reset_at.tzinfo is None:
-                        reset_at = reset_at.replace(tzinfo=timezone.utc)
+                if reset_at_str:
+                    try:
+                        reset_at = datetime.fromisoformat(reset_at_str)
+                        if reset_at.tzinfo is None:
+                            reset_at = reset_at.replace(tzinfo=timezone.utc)
+                        if now < reset_at:
+                            continue
+                    except ValueError:
+                        pass  # Corrupted date, assume okay
 
-                    # If we haven't reached the reset time yet, this model is dead on THIS key
-                    if now < reset_at:
-                        continue
-                except ValueError:
-                    pass # Corrupted date, assume okay
-
-            # If we reach here, the key is available for THIS model
             return key_val, key_id
 
         return None, None

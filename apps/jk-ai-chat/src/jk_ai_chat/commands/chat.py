@@ -204,14 +204,17 @@ class ChatRouter:
         Saves the current session to a file and starts a fresh one with a new ID.
         """
         console.print("[bold blue]Starting a new chat session...[/bold blue]")
+        console.print("[dim]⚠️  /new is not yet implemented.[/dim]")
         return True
 
     def cmd_paste(self, args):
         """Simulates a multi-line paste or injects a file into the prompt."""
+        console.print("[dim]⚠️  /paste is not yet implemented.[/dim]")
         return True
 
     def cmd_reset(self, args):
-        self.session.clear()
+        self.session.history = []
+        self.session.save()
         console.print("[bold green]🧹 Session history cleared.[/bold green]")
         return True
 
@@ -273,10 +276,12 @@ class ChatRouter:
 
     def cmd_retry(self, args):
         """Deletes the last AI response and resends the last user prompt."""
+        console.print("[dim]⚠️  /retry is not yet implemented.[/dim]")
         return True
 
     def cmd_save(self, args):
         """Exports the current conversation to a Markdown file."""
+        console.print("[dim]⚠️  /save is not yet implemented.[/dim]")
         return True
 
     def cmd_search(self, args):
@@ -302,15 +307,17 @@ class ChatRouter:
 
     def cmd_set_temp(self, args):
         """Adjusts the generation temperature (0.0 to 2.0)."""
+        console.print("[dim]⚠️  /temp is not yet implemented.[/dim]")
         return True
 
     def cmd_stats(self, args):
         """Displays accumulated usage statistics for all keys/models."""
-        # Implementation: Call your existing check_usage logic
+        console.print("[dim]⚠️  /stats is not yet implemented.[/dim]")
         return True
 
     def cmd_switch_proj(self, args):
         """Swaps the Project Profile (Modular Prompts) for the next request."""
+        console.print("[dim]⚠️  /proj is not yet implemented.[/dim]")
         return True
 
     def cmd_switch_tier(self, args):
@@ -346,11 +353,11 @@ def _generate_with_fallback(client, session, rankings):
         target_mid = model_entry['id']
         try:
             with console.status(f"[bold yellow]Thinking ({target_mid.split('/')[-1]})..."):
-                (resp, meta), _ = client.generate_with_history(
+                resp, meta = client.generate_with_history(
                     history=session.history,
                     system_instruction=session.system_instruction,
                     model_name=target_mid
-                ), target_mid
+                )
             return resp, meta, target_mid
         except PermissionError as e:
             if "MODEL_EXHAUSTED" in str(e):
