@@ -287,11 +287,29 @@ class ChatRouter:
     def cmd_search(self, args):
         """/search [query]: Semantic search with pinpoint accuracy."""
         query = " ".join(args)
-        if not self.search_engine.index_file.exists():
+        if not query.strip():
+            console.print("[red]Usage: /search [query][/red]")
+            return True
+
+        se = self.search_engine
+        index_missing = not se.index_file.exists()
+        vectors_missing = not se.vectors_dir.exists() or not any(se.vectors_dir.glob("*.npy"))
+
+        if index_missing or vectors_missing:
             console.print("[yellow]Search index not found. Building it now...[/yellow]")
-            with console.status("Embedding all sessions..."):
-                self.search_engine.rebuild_index()
-        results = self.search_engine.search(query)
+            try:
+                with console.status("Embedding all sessions..."):
+                    se.rebuild_index()
+                # Report how many sessions were indexed
+                import json
+                with open(se.index_file) as f:
+                    indexed = json.load(f)
+                console.print(f"[green]✅ Indexed {len(indexed)} session(s).[/green]")
+            except Exception as e:
+                console.print(f"[bold red]❌ Failed to build index:[/bold red] {e}")
+                return True
+
+        results = se.search(query)
         table = Table(title=f"🔍 Semantic Matches for: '{query}'", show_lines=True)
         table.add_column("Score", justify="right", style="green")
         table.add_column("Session / File", style="cyan")
@@ -302,6 +320,8 @@ class ChatRouter:
                 f"{r['session_name']}\n[dim]{r['filename']}[/dim]",
                 f"Turn {r['turn_no']}: {r['matched_text'][:100]}..."
             )
+        if not results:
+            console.print("[dim]No matches found.[/dim]")
         console.print(table)
         return True
 
