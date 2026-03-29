@@ -5,6 +5,9 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 from rich.columns import Columns
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.styles import Style
 from jk_core.prompt_engine import assemble_prompt, get_required_vars
 from jk_core.ai_client import GeminiClient
 from jk_core.orchestrator import Orchestrator
@@ -12,6 +15,12 @@ from jk_core.session_manager import SessionManager
 from jk_core.search_engine import SearchEngine
 
 console = Console()
+
+# Shared prompt_toolkit session — preserves input history across turns
+_pt_session: PromptSession = PromptSession()
+
+# Cyan bold to match existing rich palette
+_pt_style = Style.from_dict({"prompt": "ansicyan bold"})
 
 class ChatRouter:
     """
@@ -156,10 +165,12 @@ class ChatRouter:
 
         # 5. Strategy Selection
         console.print("\n[bold magenta]🕰️ TIME TRAVEL INITIALIZED[/bold magenta]")
-        choice = click.prompt(
-            "Strategy", type=click.Choice(['t', 'r', 'b']), default='t',
-            prompt_suffix="\n [t] Truncate\n [r] Replay\n [b] Branch & Truncate\n Choice: "
-        )
+        console.print(" [t] Truncate  [r] Replay  [b] Branch & Truncate")
+        while True:
+            choice = _pt_session.prompt("Choice [t/r/b] (default t): ").strip().lower() or 't'
+            if choice in ('t', 'r', 'b'):
+                break
+            console.print("[red]Please enter t, r, or b.[/red]")
 
         if choice == 'b':
             self.session.branch()
@@ -357,7 +368,7 @@ def _assemble_session(proj: str) -> tuple[str, SessionManager]:
     """Returns (system_instruction, session)."""
     variables = {}
     for var in get_required_vars(proj):
-        variables[var] = console.input(f"[bold yellow]Enter {var.replace('_', ' ').title()}: [/bold yellow]")
+        variables[var] = _pt_session.prompt(f"Enter {var.replace('_', ' ').title()}: ")
     system_instruction = assemble_prompt(proj, variables=variables)
     return SessionManager(system_instruction=system_instruction)
 
@@ -467,13 +478,31 @@ def _run_autoname(client, session, response_text):
             f"[cyan]{lite_model.split('/')[-1]}[/cyan]: [bold]{clean_title}[/bold][/dim]"
         )
 
+def _read_input(prompt_label: str) -> str:
+    """
+    Reads user input via prompt_toolkit.
+
+    - Typed input: single line, Enter to submit.
+    - Pasted input: bracketed paste mode detects the paste and submits
+      the full multi-line block intact automatically.
+    - Up/down arrows: navigate input history across turns.
+    """
+    import re
+    from prompt_toolkit.formatted_text import FormattedText
+    plain = re.sub(r"\[.*?\]", "", prompt_label)
+    # Color only the prefix; leave the input area at terminal default (white)
+    styled_prompt = FormattedText([("ansicyan bold", plain)])
+    return _pt_session.prompt(styled_prompt, multiline=False)
+
+
+
 def _run_chat_loop(client, session, router, rankings, model_id):
     user_input = None
 
     while True:
         if not user_input:
             prompt_label = f"[bold cyan]You ({client.key_id} | {session.display_name}) > [/bold cyan]"
-            user_input = console.input(prompt_label)
+            user_input = _read_input(prompt_label)
 
         cmd_result = router.handle(user_input)
 
