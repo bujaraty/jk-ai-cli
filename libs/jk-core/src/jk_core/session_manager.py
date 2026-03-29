@@ -136,9 +136,5 @@ class SessionManager:
         """Removes the last exchange from memory and REWRITES the .jsonl."""
         if len(self.history) >= 2:
             self.history = self.history[:-2]
-            # Rewrite JSONL (Standard practice for undo/delete in JSONL)
-            history_path = self.base_dir / f"{self.session_id}.jsonl"
-            with open(history_path, "w", encoding="utf-8") as f:
-                for msg in self.history:
-                    f.write(json.dumps(msg) + "\n")
+            self.save()
 
