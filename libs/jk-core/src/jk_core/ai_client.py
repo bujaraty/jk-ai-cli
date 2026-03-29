@@ -136,3 +136,47 @@ class GeminiClient:
                 return self.embed_content(text, model_name, task_type)
             raise e
 
+    def stream_with_history(self, history: list, system_instruction: str = None, model_name: str = None):
+        """Yields text chunks as they stream from the API."""
+        if not self.client:
+            self._refresh_client(model_id=model_name)
+    
+        target_model = model_name or DEFAULT_MODEL
+        formatted_history = [
+            types.Content(
+                role=turn["role"],
+                parts=[types.Part(text=(turn.get("parts", [""])[0]
+                                        if isinstance(turn.get("parts"), list)
+                                        else str(turn.get("parts", ""))))]
+            )
+            for turn in history
+        ]
+        if not formatted_history:
+            raise ValueError("No history provided for generation.")
+    
+        response = self.client.models.generate_content_stream(
+            model=target_model,
+            contents=formatted_history,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction
+            ) if system_instruction else None
+        )
+    
+        full_text = ""
+        last_chunk = None
+        for chunk in response:
+            text = chunk.text or ""
+            full_text += text
+            last_chunk = chunk
+            yield text
+    
+        # Record usage after stream completes
+        # Note: usage_metadata is on the last chunk only
+        try:
+            self.last_meta = getattr(last_chunk, 'usage_metadata', None)
+            if self.last_meta:
+                self.km.record_usage(self.key_id, target_model,
+                                     self.last_meta.prompt_token_count,
+                                     self.last_meta.candidates_token_count)
+        except Exception:
+            pass

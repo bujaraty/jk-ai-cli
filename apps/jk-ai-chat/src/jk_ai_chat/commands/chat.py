@@ -426,63 +426,71 @@ def chat_command(proj, user_input, tier="normal", latest=False):
             continue
 
         session.add_message("user", user_input)
-        with console.status("[bold yellow]Thinking..."):
-            try:
-                # CHANGE: Applied fallback logic to Normal Prompt execution
-                (response_text, meta), used_mid = generate_with_fallback(session.history)
-                session.add_message("model", response_text, model_id=model_id)
-                console.print(f"\n[bold green]AI ({client.key_id}) > [/bold green]{response_text}\n")
-                # --- NEW: Milestone 2 - Auto-Naming Logic ---
-                if session.is_eligible_for_autoname():
-                    # Use a fast 'lite' model for background tasks to save quota/time
-                    with console.status("[dim]Generating session name...[/dim]"):
-                        # We create a specific naming prompt based on the first pair
-                        naming_prompt = (
-                            "Summarize the user's intent in this conversation in "
-                            "exactly 3 to 5 words. No punctuation. "
-                            f"\nUser: {session.history[0]['parts'][0]}"
-                            f"\nAI: {response_text[:100]}"
-                        )
+        try:
+            console.print(f"\n[bold green]AI ({client.key_id}) > [/bold green]", end="")
+            response_text = ""
+            for chunk in client.stream_with_history(
+                history=session.history,
+                system_instruction=session.system_instruction,
+                model_name=model_id
+            ):
+                print(chunk, end="", flush=True)
+                response_text += chunk
+            print()  # newline after stream ends
+            session.add_message("model", response_text, model_id=model_id)
+            meta = client.last_meta
 
-                        # Generate the title
-                        title, _ = client.generate_with_meta(
-                            prompt=naming_prompt,
-                            system_instruction="You are a professional filing clerk. Give only the title.",
-                            model_name=model_id # Or a lite model if you prefer
-                        )
+            # --- NEW: Milestone 2 - Auto-Naming Logic ---
+            if session.is_eligible_for_autoname():
+                # Use a fast 'lite' model for background tasks to save quota/time
+                with console.status("[dim]Generating session name...[/dim]"):
+                    # We create a specific naming prompt based on the first pair
+                    naming_prompt = (
+                        "Summarize the user's intent in this conversation in "
+                        "exactly 3 to 5 words. No punctuation. "
+                        f"\nUser: {session.history[0]['parts'][0]}"
+                        f"\nAI: {response_text[:100]}"
+                    )
 
-                        clean_title = title.strip().replace('"', '')
-                        session.set_display_name(clean_title)
-                        console.print(f"[dim]🏷️  Session auto-named: [bold]{clean_title}[/bold][/dim]")
-                # --------------------------------------------
-                # 1. Fetch the updated state from disk
-                state = client.km._load_state()
-                acc = state.get("usage", {}).get(client.key_id, {}).get("models", {}).get(model_id, {})
+                    # Generate the title
+                    title, _ = client.generate_with_meta(
+                        prompt=naming_prompt,
+                        system_instruction="You are a professional filing clerk. Give only the title.",
+                        model_name=model_id # Or a lite model if you prefer
+                    )
 
-                # 2. Build Last Request Panel
-                last_req_info = (
-                    f"In:  [green]{meta.prompt_token_count}[/green]\n"
-                    f"Out: [blue]{meta.candidates_token_count}[/blue]\n"
-                    f"Tot: [yellow]{meta.total_token_count}[/yellow]"
-                )
-                p1 = Panel(last_req_info, title="[bold]Last Request[/bold]", border_style="dim", expand=False)
+                    clean_title = title.strip().replace('"', '')
+                    session.set_display_name(clean_title)
+                    console.print(f"[dim]🏷️  Session auto-named: [bold]{clean_title}[/bold][/dim]")
+            # --------------------------------------------
+            # 1. Fetch the updated state from disk
+            state = client.km._load_state()
+            acc = state.get("usage", {}).get(client.key_id, {}).get("models", {}).get(model_id, {})
 
-                # 3. Build Accumulated Panel (Global)
-                acc_info = (
-                    f"Reqs: [magenta]{acc.get('request_count', 0)}[/magenta]\n"
-                    f"In:   [green]{acc.get('total_input_tokens', 0)}[/green]\n"
-                    f"Out:  [blue]{acc.get('total_output_tokens', 0)}[/blue]"
-                )
-                p2 = Panel(acc_info, title="[bold]Accumulated (Global)[/bold]", border_style="dim", expand=False)
+            # 2. Build Last Request Panel
+            last_req_info = (
+                f"In:  [green]{meta.prompt_token_count}[/green]\n"
+                f"Out: [blue]{meta.candidates_token_count}[/blue]\n"
+                f"Tot: [yellow]{meta.total_token_count}[/yellow]"
+            )
+            p1 = Panel(last_req_info, title="[bold]Last Request[/bold]", border_style="dim", expand=False)
 
-                # 4. Display side-by-side
-                console.print(Columns([p1, p2]))
-                # ----------------------------------------------------
+            # 3. Build Accumulated Panel (Global)
+            acc_info = (
+                f"Reqs: [magenta]{acc.get('request_count', 0)}[/magenta]\n"
+                f"In:   [green]{acc.get('total_input_tokens', 0)}[/green]\n"
+                f"Out:  [blue]{acc.get('total_output_tokens', 0)}[/blue]"
+            )
+            p2 = Panel(acc_info, title="[bold]Accumulated (Global)[/bold]", border_style="dim", expand=False)
 
-                user_input = None # Clear for next loop iteration
+            # 4. Display side-by-side
+            console.print(Columns([p1, p2]))
+            # ----------------------------------------------------
 
-            except Exception as e:
-                console.print(f"[bold red]Error:[/bold red] {e}")
-                session.history.pop()
-                user_input = None
+            user_input = None # Clear for next loop iteration
+
+        except Exception as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            session.history.pop()
+            user_input = None
 
