@@ -442,10 +442,18 @@ def _print_token_stats(client, meta, model_id):
     )
     console.print(Columns([p1, p2]))
 
-def _run_autoname(client, session, response_text, model_id):
-    """Auto-names the session after the first exchange."""
+def _run_autoname(client, session, response_text):
+    """Auto-names the session after the first exchange using a lite model."""
     if not session.is_eligible_for_autoname():
         return
+
+    # Pick the cheapest/fastest model for this background task
+    lite_orch = Orchestrator(provider="google", tier="lite")
+    lite_rankings = lite_orch.get_rankings(action="generateContent")
+    lite_model = lite_rankings[0]["id"] if lite_rankings else None
+    if not lite_model:
+        return
+
     with console.status("[dim]Generating session name...[/dim]"):
         naming_prompt = (
             "Summarize the user's intent in this conversation in "
@@ -456,11 +464,14 @@ def _run_autoname(client, session, response_text, model_id):
         title, _ = client.generate_with_meta(
             prompt=naming_prompt,
             system_instruction="You are a professional filing clerk. Give only the title.",
-            model_name=model_id
+            model_name=lite_model
         )
         clean_title = title.strip().replace('"', '')
         session.set_display_name(clean_title)
-        console.print(f"[dim]🏷️  Session auto-named: [bold]{clean_title}[/bold][/dim]")
+        console.print(
+            f"[dim]🏷️  Auto-named via [yellow]{client.key_id}[/yellow] | "
+            f"[cyan]{lite_model.split('/')[-1]}[/cyan]: [bold]{clean_title}[/bold][/dim]"
+        )
 
 def _run_chat_loop(client, session, router, rankings, model_id):
     user_input = None
@@ -486,11 +497,13 @@ def _run_chat_loop(client, session, router, rankings, model_id):
         try:
             response_text = ""
             used_mid = model_id
-        
+
             for candidate in rankings:
                 used_mid = candidate['id']
                 try:
-                    console.print(f"\n[bold green]AI ({client.key_id}) > [/bold green]", end="")
+                    key_before = client.key_id
+                    console.print(f"[dim][API] stream_with_history | key={key_before} | model={used_mid.split('/')[-1]}[/dim]")
+                    console.print(f"[bold green]AI ({key_before} | {used_mid.split('/')[-1]}) >[/bold green] ", end="")
                     for chunk in client.stream_with_history(
                         history=session.history,
                         system_instruction=session.system_instruction,
@@ -499,6 +512,9 @@ def _run_chat_loop(client, session, router, rankings, model_id):
                         print(chunk, end="", flush=True)
                         response_text += chunk
                     print()
+                    # If key rotated mid-stream, clarify what actually served it
+                    if client.key_id != key_before:
+                        console.print(f"[dim](↑ served by {client.key_id} | {used_mid.split('/')[-1]} after key rotation)[/dim]")
                     break  # success
                 except PermissionError as e:
                     if "MODEL_EXHAUSTED" in str(e):
@@ -508,12 +524,12 @@ def _run_chat_loop(client, session, router, rankings, model_id):
                     raise
             else:
                 raise RuntimeError("All available models and keys are truly exhausted.")
-        
+
             session.add_message("model", response_text, model_id=used_mid)
             meta = client.last_meta
-        
+
             try:
-                _run_autoname(client, session, response_text, used_mid)
+                _run_autoname(client, session, response_text)
             except Exception:
                 pass
             _print_token_stats(client, meta, used_mid)

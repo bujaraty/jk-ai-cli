@@ -9,6 +9,10 @@ class GeminiClient:
         self.client = None
         self.key_id = None
 
+    def _log_call(self, method: str, model: str):
+        """Debug: print key + model at the moment of every API call."""
+        print(f"\033[2m[API] {method} | key={self.key_id} | model={model.split('/')[-1]}\033[0m")
+
     def _execute_with_retry(self, fn, model_id: str):
         max_attempts = len(self.km._load_keys()) or 3
     
@@ -35,13 +39,14 @@ class GeminiClient:
             raise PermissionError(f"MODEL_EXHAUSTED:{model_id}")
 
         self.key_id = key_id
-        print(f"🔄 Switched to Key: {self.key_id}")
-        # Initialize with the correct client class
+        model_label = f" for {model_id.split('/')[-1]}" if model_id else ""
+        print(f"🔄 Switched to Key: {self.key_id}{model_label}")
         self.client = genai.Client(api_key=api_key)
 
     def generate(self, prompt, system_instruction=None, model_name=None):
         target_model = model_name or DEFAULT_MODEL
         def fn():
+            self._log_call("generate", target_model)
             response = self.client.models.generate_content(
                 model=target_model,
                 contents=prompt,
@@ -60,6 +65,7 @@ class GeminiClient:
     def generate_with_meta(self, prompt, system_instruction=None, model_name=None):
         target_model = model_name or DEFAULT_MODEL
         def fn():
+            self._log_call("generate_with_meta", target_model)
             response = self.client.models.generate_content(
                 model=target_model,
                 contents=prompt,
@@ -90,6 +96,7 @@ class GeminiClient:
             raise ValueError("No history provided for generation.")
     
         def fn():
+            self._log_call("generate_with_history", target_model)
             response = self.client.models.generate_content(
                 model=target_model,
                 contents=formatted_history,
@@ -140,7 +147,7 @@ class GeminiClient:
     
         for attempt in range(max_attempts):
             try:
-                if not self.client:          # ← same fix
+                if not self.client:
                     self._refresh_client(model_id=target_model)
                 yield from self._do_stream(history, system_instruction, target_model)
                 return
@@ -169,7 +176,7 @@ class GeminiClient:
         ]
         if not formatted_history:
             raise ValueError("No history provided for generation.")
-    
+
         response = self.client.models.generate_content_stream(
             model=target_model,
             contents=formatted_history,

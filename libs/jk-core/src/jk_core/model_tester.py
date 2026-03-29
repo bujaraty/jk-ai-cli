@@ -51,14 +51,17 @@ class ModelTester:
                 if action in caps:
                     status = "FAIL"
                     error_msg = None
+                    print(f"  🔍 Probing [{key_id}] {m_id} → {action} ...", end=" ", flush=True)
                     try:
                         if action == "generateContent":
                             client.models.generate_content(model=m_id, contents="hi")
                         elif action == "embedContent":
                             client.models.embed_content(model=m_id, contents="hi")
                         status = "PASS"
+                        print("✅")
                     except Exception as e:
                         error_msg = str(e).replace("\n", " ")
+                        print("❌")
 
                     caps[action].update({
                         "status": status,
