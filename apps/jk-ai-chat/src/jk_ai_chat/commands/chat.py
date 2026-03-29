@@ -289,25 +289,19 @@ class ChatRouter:
         query = " ".join(args)
         if not query.strip():
             console.print("[red]Usage: /search [query][/red]")
+            console.print("[dim]Example: /search trip to japan[/dim]")
+            console.print("[dim]Tip: searches semantically across all past sessions — typos are fine.[/dim]")
             return True
 
         se = self.search_engine
-        index_missing = not se.index_file.exists()
-        vectors_missing = not se.vectors_dir.exists() or not any(se.vectors_dir.glob("*.npy"))
-
-        if index_missing or vectors_missing:
-            console.print("[yellow]Search index not found. Building it now...[/yellow]")
-            try:
-                with console.status("Embedding all sessions..."):
-                    se.rebuild_index()
-                # Report how many sessions were indexed
-                import json
-                with open(se.index_file) as f:
-                    indexed = json.load(f)
-                console.print(f"[green]✅ Indexed {len(indexed)} session(s).[/green]")
-            except Exception as e:
-                console.print(f"[bold red]❌ Failed to build index:[/bold red] {e}")
-                return True
+        try:
+            with console.status("Updating search index..."):
+                sessions_updated, turns_added = se.update_index()
+            if sessions_updated > 0:
+                console.print(f"[dim]🗂  Indexed {turns_added} new turn(s) across {sessions_updated} session(s).[/dim]")
+        except Exception as e:
+            console.print(f"[bold red]❌ Failed to update index:[/bold red] {e}")
+            return True
 
         results = se.search(query)
         table = Table(title=f"🔍 Semantic Matches for: '{query}'", show_lines=True)
