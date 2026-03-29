@@ -10,6 +10,7 @@ def cli_group(ctx):
         chat_command()
 
 @cli_group.command(name="init")
-def init_sub():
-    init_command()
+@click.option('--probe', is_flag=True, help='Perform a full model discovery and health probe')
+def init_sub(probe):
+    init_command(probe=probe)
 
