@@ -83,6 +83,11 @@ class ChatRouter:
 
     def cmd_copy(self, args):
         """Copies the most recent AI response to the system clipboard."""
+        import pyperclip
+        last_ai = next((m for m in reversed(self.session.history) if m['role'] == 'model'), None)
+        if last_ai:
+            pyperclip.copy(last_ai['parts'][0])
+            console.print("[dim]✅ Copied to clipboard.[/dim]")
         return True
 
     def cmd_edit(self, args):
@@ -327,59 +332,111 @@ class ChatRouter:
         console.print("↩️  Last exchange removed from session.")
         return True
 
-def chat_command(proj, user_input, tier="normal", latest=False):
-    orch = Orchestrator(provider="google", tier=tier, prefer_latest=latest)
-    rankings = orch.get_rankings(action="generateContent")
-    if not rankings:
-        console.print("[bold red]❌ Error:[/bold red] No healthy models found.")
-        return
-    best_model = rankings[0]
-    model_id = best_model['id']
-
-    reasons_str = " • " + "\n • ".join(best_model['reasons'])
-    model_info = Text.assemble(
-        (f"Model: ", "bold cyan"), (f"{model_id}\n", "yellow"),
-        (f"Score: ", "bold cyan"), (f"{best_model['score']}\n", "green"),
-        (f"Logic:\n", "bold cyan"), (reasons_str, "dim white")
-    )
-    console.print(Panel(model_info, title="[bold magenta]Selection Logic[/bold magenta]", expand=False))
-
-    # 2. INITIALIZE CLIENT
-    client = GeminiClient(tier="free")
-    try:
-        client._refresh_client()
-    except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        return
-
-    # 3. PROMPT ASSEMBLY
+def _assemble_session(proj: str) -> tuple[str, SessionManager]:
+    """Returns (system_instruction, session)."""
     variables = {}
-    required = get_required_vars(proj)
-    for var in required:
+    for var in get_required_vars(proj):
         variables[var] = console.input(f"[bold yellow]Enter {var.replace('_', ' ').title()}: [/bold yellow]")
     system_instruction = assemble_prompt(proj, variables=variables)
+    return SessionManager(system_instruction=system_instruction)
 
-    session = SessionManager(system_instruction=system_instruction)
-    router = ChatRouter(client, orch, session)
+def _generate_with_fallback(client, session, rankings):
+    """Tries each ranked model in order, returns (resp, meta, used_mid)."""
+    for model_entry in rankings:
+        target_mid = model_entry['id']
+        try:
+            with console.status(f"[bold yellow]Thinking ({target_mid.split('/')[-1]})..."):
+                (resp, meta), _ = client.generate_with_history(
+                    history=session.history,
+                    system_instruction=session.system_instruction,
+                    model_name=target_mid
+                ), target_mid
+            return resp, meta, target_mid
+        except PermissionError as e:
+            if "MODEL_EXHAUSTED" in str(e):
+                console.print(f"[dim yellow]⚠️  {target_mid} exhausted. Falling back...[/dim yellow]")
+                continue
+            raise
+    raise RuntimeError("All available models and keys are truly exhausted.")
 
-    def generate_with_fallback(current_history):
-        # CHANGE: Iterate through all ranked candidates if the top one is exhausted
-        for model_entry in rankings:
-            target_mid = model_entry['id']
-            try:
-                # We show which model is currently being attempted
-                with console.status(f"[bold yellow]Thinking ({target_mid.split('/')[-1]})..."):
-                    return client.generate_with_history(
-                        history=current_history,
-                        system_instruction=session.system_instruction,
-                        model_name=target_mid
-                    ), target_mid
-            except PermissionError as e:
-                if "MODEL_EXHAUSTED" in str(e):
-                    console.print(f"[dim yellow]⚠️  {target_mid} exhausted on all keys. Falling back...[/dim yellow]")
-                    continue
-                raise e
-        raise RuntimeError("All available models and keys are truly exhausted.")
+def _handle_replay(client, session, rankings, future_prompts, model_id):
+    """Handles the replay path after a /edit time-travel."""
+    try:
+        resp, meta, used_mid = _generate_with_fallback(client, session, rankings)
+        session.add_message("model", resp, model_id=used_mid)
+        console.print(f"[bold green]AI ({client.key_id} | {used_mid.split('/')[-1]}) > [/bold green]{resp}\n")
+    except Exception as e:
+        console.print(f"[bold red]Replay Error:[/bold red] {e}")
+        return
+
+    if not future_prompts:
+        return
+
+    console.print(Panel("[bold yellow]🔄 REPLAY MODE ACTIVATED[/bold yellow]\nRegenerating from edited point...", border_style="yellow"))
+
+    for i, p_turn in enumerate(future_prompts, 1):
+        p_text = p_turn['parts'][0] if isinstance(p_turn['parts'], list) else p_turn['parts']
+        console.print(f"[bold cyan]You (Replay {i}/{len(future_prompts)}) > [/bold cyan]{p_text}")
+        session.add_message("user", p_text)
+        try:
+            resp, meta, used_mid = _generate_with_fallback(client, session, rankings)
+            session.add_message("model", resp, model_id=used_mid)
+            console.print(f"[bold green]AI ({client.key_id} | {used_mid.split('/')[-1]}) > [/bold green]{resp}\n")
+        except Exception as e:
+            console.print(f"[bold red]Replay Error:[/bold red] {e}")
+            break
+
+    console.print("[bold green]✨ Replay complete. Timeline is now consistent.[/bold green]\n")
+
+def _init_client() -> GeminiClient:
+    """Returns an initialized GeminiClient or raises."""
+    client = GeminiClient(tier="free")
+    client._refresh_client()
+    return client
+
+def _print_token_stats(client, meta, model_id):
+    """Prints last-request and accumulated token usage panels."""
+    if not meta:
+        return
+    state = client.km._load_state()
+    acc = state.get("usage", {}).get(client.key_id, {}).get("models", {}).get(model_id, {})
+
+    p1 = Panel(
+        f"In:  [green]{meta.prompt_token_count}[/green]\n"
+        f"Out: [blue]{meta.candidates_token_count}[/blue]\n"
+        f"Tot: [yellow]{meta.total_token_count}[/yellow]",
+        title="[bold]Last Request[/bold]", border_style="dim", expand=False
+    )
+    p2 = Panel(
+        f"Reqs: [magenta]{acc.get('request_count', 0)}[/magenta]\n"
+        f"In:   [green]{acc.get('total_input_tokens', 0)}[/green]\n"
+        f"Out:  [blue]{acc.get('total_output_tokens', 0)}[/blue]",
+        title="[bold]Accumulated (Global)[/bold]", border_style="dim", expand=False
+    )
+    console.print(Columns([p1, p2]))
+
+def _run_autoname(client, session, response_text, model_id):
+    """Auto-names the session after the first exchange."""
+    if not session.is_eligible_for_autoname():
+        return
+    with console.status("[dim]Generating session name...[/dim]"):
+        naming_prompt = (
+            "Summarize the user's intent in this conversation in "
+            "exactly 3 to 5 words. No punctuation. "
+            f"\nUser: {session.history[0]['parts'][0]}"
+            f"\nAI: {response_text[:100]}"
+        )
+        title, _ = client.generate_with_meta(
+            prompt=naming_prompt,
+            system_instruction="You are a professional filing clerk. Give only the title.",
+            model_name=model_id
+        )
+        clean_title = title.strip().replace('"', '')
+        session.set_display_name(clean_title)
+        console.print(f"[dim]🏷️  Session auto-named: [bold]{clean_title}[/bold][/dim]")
+
+def _run_chat_loop(client, session, router, rankings, model_id):
+    user_input = None
 
     while True:
         if not user_input:
@@ -387,110 +444,254 @@ def chat_command(proj, user_input, tier="normal", latest=False):
             user_input = console.input(prompt_label)
 
         cmd_result = router.handle(user_input)
+
         if isinstance(cmd_result, dict) and cmd_result.get("replay"):
-            future_prompts = cmd_result["prompts"]
-            # STEP A: Generate the FIRST response for the newly edited prompt
-            try:
-                # CHANGE: Applied fallback logic to Replay Step A
-                (resp, meta), used_mid = generate_with_fallback(session.history)
-                session.add_message("model", resp, model_id=used_mid)
-                console.print(f"[bold green]AI ({client.key_id} | {used_mid.split('/')[-1]}) > [/bold green]{resp}\n")
-            except Exception as e:
-                console.print(f"[bold red]Replay Error:[/bold red] {e}")
-                user_input = None; continue
-
-            console.print(Panel("[bold yellow]🔄 REPLAY MODE ACTIVATED[/bold yellow]\nRegenerating conversation from the edited point...", border_style="yellow"))
-
-            # STEP B: Replay the REST of the conversation
-            for i, p_turn in enumerate(future_prompts, 1):
-                p_text = p_turn['parts'][0] if isinstance(p_turn['parts'], list) else p_turn['parts']
-                p_model = p_turn.get("metadata", {}).get("model", model_id)
-
-                console.print(f"[bold cyan]You (Replay {i}/{len(future_prompts)}) > [/bold cyan]{p_text}")
-                session.add_message("user", p_text)
-
-                try:
-                    # CHANGE: Applied fallback logic to Replay Step B
-                    (resp, meta), used_mid = generate_with_fallback(session.history)
-                    session.add_message("model", resp, model_id=used_mid)
-                    console.print(f"[bold green]AI ({client.key_id} | {used_mid.split('/')[-1]}) > [/bold green]{resp}\n")
-                except Exception as e:
-                    console.print(f"[bold red]Replay Error:[/bold red] {e}")
-                    break
-
-            console.print("[bold green]✨ Replay complete. Timeline is now consistent.[/bold green]\n")
-            user_input = None
-            continue
-        elif cmd_result:
+            _handle_replay(client, session, rankings, cmd_result["prompts"], model_id)
             user_input = None
             continue
 
+        if cmd_result:
+            user_input = None
+            continue
+
+        # Normal prompt path
         session.add_message("user", user_input)
         try:
-            console.print(f"\n[bold green]AI ({client.key_id}) > [/bold green]", end="")
             response_text = ""
-            for chunk in client.stream_with_history(
-                history=session.history,
-                system_instruction=session.system_instruction,
-                model_name=model_id
-            ):
-                print(chunk, end="", flush=True)
-                response_text += chunk
-            print()  # newline after stream ends
-            session.add_message("model", response_text, model_id=model_id)
+            used_mid = model_id
+        
+            for candidate in rankings:
+                used_mid = candidate['id']
+                try:
+                    console.print(f"\n[bold green]AI ({client.key_id}) > [/bold green]", end="")
+                    for chunk in client.stream_with_history(
+                        history=session.history,
+                        system_instruction=session.system_instruction,
+                        model_name=used_mid
+                    ):
+                        print(chunk, end="", flush=True)
+                        response_text += chunk
+                    print()
+                    break  # success
+                except PermissionError as e:
+                    if "MODEL_EXHAUSTED" in str(e):
+                        console.print(f"\n[dim yellow]⚠️  {used_mid} exhausted on all keys. Falling back...[/dim yellow]")
+                        response_text = ""
+                        continue
+                    raise
+            else:
+                raise RuntimeError("All available models and keys are truly exhausted.")
+        
+            session.add_message("model", response_text, model_id=used_mid)
             meta = client.last_meta
-
-            # --- NEW: Milestone 2 - Auto-Naming Logic ---
-            if session.is_eligible_for_autoname():
-                # Use a fast 'lite' model for background tasks to save quota/time
-                with console.status("[dim]Generating session name...[/dim]"):
-                    # We create a specific naming prompt based on the first pair
-                    naming_prompt = (
-                        "Summarize the user's intent in this conversation in "
-                        "exactly 3 to 5 words. No punctuation. "
-                        f"\nUser: {session.history[0]['parts'][0]}"
-                        f"\nAI: {response_text[:100]}"
-                    )
-
-                    # Generate the title
-                    title, _ = client.generate_with_meta(
-                        prompt=naming_prompt,
-                        system_instruction="You are a professional filing clerk. Give only the title.",
-                        model_name=model_id # Or a lite model if you prefer
-                    )
-
-                    clean_title = title.strip().replace('"', '')
-                    session.set_display_name(clean_title)
-                    console.print(f"[dim]🏷️  Session auto-named: [bold]{clean_title}[/bold][/dim]")
-            # --------------------------------------------
-            # 1. Fetch the updated state from disk
-            state = client.km._load_state()
-            acc = state.get("usage", {}).get(client.key_id, {}).get("models", {}).get(model_id, {})
-
-            # 2. Build Last Request Panel
-            last_req_info = (
-                f"In:  [green]{meta.prompt_token_count}[/green]\n"
-                f"Out: [blue]{meta.candidates_token_count}[/blue]\n"
-                f"Tot: [yellow]{meta.total_token_count}[/yellow]"
-            )
-            p1 = Panel(last_req_info, title="[bold]Last Request[/bold]", border_style="dim", expand=False)
-
-            # 3. Build Accumulated Panel (Global)
-            acc_info = (
-                f"Reqs: [magenta]{acc.get('request_count', 0)}[/magenta]\n"
-                f"In:   [green]{acc.get('total_input_tokens', 0)}[/green]\n"
-                f"Out:  [blue]{acc.get('total_output_tokens', 0)}[/blue]"
-            )
-            p2 = Panel(acc_info, title="[bold]Accumulated (Global)[/bold]", border_style="dim", expand=False)
-
-            # 4. Display side-by-side
-            console.print(Columns([p1, p2]))
-            # ----------------------------------------------------
-
-            user_input = None # Clear for next loop iteration
-
+        
+            try:
+                _run_autoname(client, session, response_text, used_mid)
+            except Exception:
+                pass
+            _print_token_stats(client, meta, used_mid)
+        
         except Exception as e:
             console.print(f"[bold red]Error:[/bold red] {e}")
             session.history.pop()
-            user_input = None
+        
+        user_input = None
+
+def _select_model(tier: str, latest: bool):
+    """Returns (orchestrator, rankings, model_id) or raises."""
+    orch = Orchestrator(provider="google", tier=tier, prefer_latest=latest)
+    rankings = orch.get_rankings(action="generateContent")
+    if not rankings:
+        raise RuntimeError("No healthy models found.")
+    best = rankings[0]
+
+    reasons_str = " • " + "\n • ".join(best['reasons'])
+    model_info = Text.assemble(
+        ("Model: ", "bold cyan"), (f"{best['id']}\n", "yellow"),
+        ("Score: ", "bold cyan"), (f"{best['score']}\n", "green"),
+        ("Logic:\n", "bold cyan"), (reasons_str, "dim white")
+    )
+    console.print(Panel(model_info, title="[bold magenta]Selection Logic[/bold magenta]", expand=False))
+    return orch, rankings, best['id']
+
+def chat_command(proj, user_input, tier="normal", latest=False):
+    try:
+        orch, rankings, model_id = _select_model(tier, latest)
+        client = _init_client()
+        session = _assemble_session(proj)
+    except Exception as e:
+        console.print(f"[bold red]❌ Error:[/bold red] {e}")
+        return
+
+    router = ChatRouter(client, orch, session)
+    _run_chat_loop(client, session, router, rankings, model_id)
+
+
+#def chat_command(proj, user_input, tier="normal", latest=False):
+#    orch = Orchestrator(provider="google", tier=tier, prefer_latest=latest)
+#    rankings = orch.get_rankings(action="generateContent")
+#    if not rankings:
+#        console.print("[bold red]❌ Error:[/bold red] No healthy models found.")
+#        return
+#    best_model = rankings[0]
+#    model_id = best_model['id']
+#
+#    reasons_str = " • " + "\n • ".join(best_model['reasons'])
+#    model_info = Text.assemble(
+#        (f"Model: ", "bold cyan"), (f"{model_id}\n", "yellow"),
+#        (f"Score: ", "bold cyan"), (f"{best_model['score']}\n", "green"),
+#        (f"Logic:\n", "bold cyan"), (reasons_str, "dim white")
+#    )
+#    console.print(Panel(model_info, title="[bold magenta]Selection Logic[/bold magenta]", expand=False))
+#
+#    # 2. INITIALIZE CLIENT
+#    client = GeminiClient(tier="free")
+#    try:
+#        client._refresh_client()
+#    except Exception as e:
+#        console.print(f"[bold red]Error:[/bold red] {e}")
+#        return
+#
+#    # 3. PROMPT ASSEMBLY
+#    variables = {}
+#    required = get_required_vars(proj)
+#    for var in required:
+#        variables[var] = console.input(f"[bold yellow]Enter {var.replace('_', ' ').title()}: [/bold yellow]")
+#    system_instruction = assemble_prompt(proj, variables=variables)
+#
+#    session = SessionManager(system_instruction=system_instruction)
+#    router = ChatRouter(client, orch, session)
+#
+#    def generate_with_fallback(current_history):
+#        # CHANGE: Iterate through all ranked candidates if the top one is exhausted
+#        for model_entry in rankings:
+#            target_mid = model_entry['id']
+#            try:
+#                # We show which model is currently being attempted
+#                with console.status(f"[bold yellow]Thinking ({target_mid.split('/')[-1]})..."):
+#                    return client.generate_with_history(
+#                        history=current_history,
+#                        system_instruction=session.system_instruction,
+#                        model_name=target_mid
+#                    ), target_mid
+#            except PermissionError as e:
+#                if "MODEL_EXHAUSTED" in str(e):
+#                    console.print(f"[dim yellow]⚠️  {target_mid} exhausted on all keys. Falling back...[/dim yellow]")
+#                    continue
+#                raise e
+#        raise RuntimeError("All available models and keys are truly exhausted.")
+#
+#    while True:
+#        if not user_input:
+#            prompt_label = f"[bold cyan]You ({client.key_id} | {session.display_name}) > [/bold cyan]"
+#            user_input = console.input(prompt_label)
+#
+#        cmd_result = router.handle(user_input)
+#        if isinstance(cmd_result, dict) and cmd_result.get("replay"):
+#            future_prompts = cmd_result["prompts"]
+#            # STEP A: Generate the FIRST response for the newly edited prompt
+#            try:
+#                # CHANGE: Applied fallback logic to Replay Step A
+#                (resp, meta), used_mid = generate_with_fallback(session.history)
+#                session.add_message("model", resp, model_id=used_mid)
+#                console.print(f"[bold green]AI ({client.key_id} | {used_mid.split('/')[-1]}) > [/bold green]{resp}\n")
+#            except Exception as e:
+#                console.print(f"[bold red]Replay Error:[/bold red] {e}")
+#                user_input = None; continue
+#
+#            console.print(Panel("[bold yellow]🔄 REPLAY MODE ACTIVATED[/bold yellow]\nRegenerating conversation from the edited point...", border_style="yellow"))
+#
+#            # STEP B: Replay the REST of the conversation
+#            for i, p_turn in enumerate(future_prompts, 1):
+#                p_text = p_turn['parts'][0] if isinstance(p_turn['parts'], list) else p_turn['parts']
+#                p_model = p_turn.get("metadata", {}).get("model", model_id)
+#
+#                console.print(f"[bold cyan]You (Replay {i}/{len(future_prompts)}) > [/bold cyan]{p_text}")
+#                session.add_message("user", p_text)
+#
+#                try:
+#                    # CHANGE: Applied fallback logic to Replay Step B
+#                    (resp, meta), used_mid = generate_with_fallback(session.history)
+#                    session.add_message("model", resp, model_id=used_mid)
+#                    console.print(f"[bold green]AI ({client.key_id} | {used_mid.split('/')[-1]}) > [/bold green]{resp}\n")
+#                except Exception as e:
+#                    console.print(f"[bold red]Replay Error:[/bold red] {e}")
+#                    break
+#
+#            console.print("[bold green]✨ Replay complete. Timeline is now consistent.[/bold green]\n")
+#            user_input = None
+#            continue
+#        elif cmd_result:
+#            user_input = None
+#            continue
+#
+#        session.add_message("user", user_input)
+#        try:
+#            console.print(f"\n[bold green]AI ({client.key_id}) > [/bold green]", end="")
+#            response_text = ""
+#            active_model = model_id
+#            for chunk in client.stream_with_history(
+#                history=session.history,
+#                system_instruction=session.system_instruction,
+#                model_name=model_id
+#            ):
+#                print(chunk, end="", flush=True)
+#                response_text += chunk
+#            print()  # newline after stream ends
+#            session.add_message("model", response_text, model_id=active_model)
+#            meta = client.last_meta
+#
+#            # --- NEW: Milestone 2 - Auto-Naming Logic ---
+#            if session.is_eligible_for_autoname():
+#                # Use a fast 'lite' model for background tasks to save quota/time
+#                with console.status("[dim]Generating session name...[/dim]"):
+#                    # We create a specific naming prompt based on the first pair
+#                    naming_prompt = (
+#                        "Summarize the user's intent in this conversation in "
+#                        "exactly 3 to 5 words. No punctuation. "
+#                        f"\nUser: {session.history[0]['parts'][0]}"
+#                        f"\nAI: {response_text[:100]}"
+#                    )
+#
+#                    # Generate the title
+#                    title, _ = client.generate_with_meta(
+#                        prompt=naming_prompt,
+#                        system_instruction="You are a professional filing clerk. Give only the title.",
+#                        model_name=model_id # Or a lite model if you prefer
+#                    )
+#
+#                    clean_title = title.strip().replace('"', '')
+#                    session.set_display_name(clean_title)
+#                    console.print(f"[dim]🏷️  Session auto-named: [bold]{clean_title}[/bold][/dim]")
+#            # --------------------------------------------
+#            # 1. Fetch the updated state from disk
+#            state = client.km._load_state()
+#            acc = state.get("usage", {}).get(client.key_id, {}).get("models", {}).get(model_id, {})
+#
+#            # 2. Build Last Request Panel
+#            last_req_info = (
+#                f"In:  [green]{meta.prompt_token_count}[/green]\n"
+#                f"Out: [blue]{meta.candidates_token_count}[/blue]\n"
+#                f"Tot: [yellow]{meta.total_token_count}[/yellow]"
+#            )
+#            p1 = Panel(last_req_info, title="[bold]Last Request[/bold]", border_style="dim", expand=False)
+#
+#            # 3. Build Accumulated Panel (Global)
+#            acc_info = (
+#                f"Reqs: [magenta]{acc.get('request_count', 0)}[/magenta]\n"
+#                f"In:   [green]{acc.get('total_input_tokens', 0)}[/green]\n"
+#                f"Out:  [blue]{acc.get('total_output_tokens', 0)}[/blue]"
+#            )
+#            p2 = Panel(acc_info, title="[bold]Accumulated (Global)[/bold]", border_style="dim", expand=False)
+#
+#            # 4. Display side-by-side
+#            console.print(Columns([p1, p2]))
+#            # ----------------------------------------------------
+#
+#            user_input = None # Clear for next loop iteration
+#
+#        except Exception as e:
+#            console.print(f"[bold red]Error:[/bold red] {e}")
+#            session.history.pop()
+#            user_input = None
 

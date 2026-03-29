@@ -10,23 +10,21 @@ class GeminiClient:
         self.key_id = None
 
     def _execute_with_retry(self, fn, model_id: str):
-        """Executes fn(), rotating keys on 429 up to len(keys) times."""
         max_attempts = len(self.km._load_keys()) or 3
+    
         for attempt in range(max_attempts):
             try:
-                if not self.client:
+                if not self.client:          # ← only refresh if no client yet
                     self._refresh_client(model_id=model_id)
                 return fn()
             except Exception as e:
                 error_str = str(e).lower()
                 if "429" in error_str or "quota" in error_str:
                     self.km.mark_exhausted(self.key_id, model_id)
-                    try:
-                        self._refresh_client(model_id=model_id)
-                    except PermissionError:
-                        raise PermissionError(f"MODEL_EXHAUSTED:{model_id}")
-                else:
-                    raise e
+                    self._refresh_client(model_id=model_id)  # ← refresh AFTER marking exhausted
+                    continue
+                raise
+    
         raise PermissionError(f"MODEL_EXHAUSTED:{model_id}")
 
     def _refresh_client(self, model_id: str = None):
@@ -136,12 +134,30 @@ class GeminiClient:
                 return self.embed_content(text, model_name, task_type)
             raise e
 
-    def stream_with_history(self, history: list, system_instruction: str = None, model_name: str = None):
-        """Yields text chunks as they stream from the API."""
-        if not self.client:
-            self._refresh_client(model_id=model_name)
-    
+    def stream_with_history(self, history, system_instruction=None, model_name=None):
         target_model = model_name or DEFAULT_MODEL
+        max_attempts = len(self.km._load_keys()) or 3
+    
+        for attempt in range(max_attempts):
+            try:
+                if not self.client:          # ← same fix
+                    self._refresh_client(model_id=target_model)
+                yield from self._do_stream(history, system_instruction, target_model)
+                return
+            except PermissionError:
+                raise
+            except Exception as e:
+                error_str = str(e).lower()
+                if "429" in error_str or "quota" in error_str:
+                    self.km.mark_exhausted(self.key_id, target_model)
+                    self._refresh_client(model_id=target_model)  # ← refresh AFTER marking exhausted
+                    continue
+                raise
+    
+        raise PermissionError(f"MODEL_EXHAUSTED:{target_model}")
+    
+    def _do_stream(self, history, system_instruction, target_model):
+        """Private generator — just streams, no retry logic."""
         formatted_history = [
             types.Content(
                 role=turn["role"],
@@ -162,21 +178,15 @@ class GeminiClient:
             ) if system_instruction else None
         )
     
-        full_text = ""
         last_chunk = None
         for chunk in response:
             text = chunk.text or ""
-            full_text += text
             last_chunk = chunk
             yield text
     
-        # Record usage after stream completes
-        # Note: usage_metadata is on the last chunk only
-        try:
-            self.last_meta = getattr(last_chunk, 'usage_metadata', None)
-            if self.last_meta:
-                self.km.record_usage(self.key_id, target_model,
-                                     self.last_meta.prompt_token_count,
-                                     self.last_meta.candidates_token_count)
-        except Exception:
-            pass
+        # Store meta after stream completes
+        self.last_meta = getattr(last_chunk, 'usage_metadata', None)
+        if self.last_meta:
+            self.km.record_usage(self.key_id, target_model,
+                                 self.last_meta.prompt_token_count,
+                                 self.last_meta.candidates_token_count)
