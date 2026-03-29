@@ -9,6 +9,7 @@ from jk_core.prompt_engine import assemble_prompt, get_required_vars
 from jk_core.ai_client import GeminiClient
 from jk_core.orchestrator import Orchestrator
 from jk_core.session_manager import SessionManager
+from jk_core.search_engine import SearchEngine
 
 console = Console()
 
@@ -22,6 +23,7 @@ class ChatRouter:
         self.client = client
         self.orch = orchestrator
         self.session = session_manager
+        self.search_engine = SearchEngine(client)
         self._session_map = {}
         self._edit_map = {} # CHANGE: Initialize the map here
 
@@ -60,6 +62,7 @@ class ChatRouter:
             "/resume": self.cmd_resume,
             "/retry": self.cmd_retry,
             "/save": self.cmd_save,
+            "/search": self.cmd_search,
             "/stats": self.cmd_stats,
             "/switch": self.cmd_switch_tier,
             "/temp": self.cmd_set_temp,
@@ -108,7 +111,7 @@ class ChatRouter:
                     if len(content) > 50:
                         content = content[:47] + "..."
 
-                    self._edit_map[str(counter)] = real_idx
+                    display_to_real[str(counter)] = real_idx
                     table.add_row(str(counter), "YOU", content)
                     counter += 1
 
@@ -269,6 +272,27 @@ class ChatRouter:
 
     def cmd_save(self, args):
         """Exports the current conversation to a Markdown file."""
+        return True
+
+    def cmd_search(self, args):
+        """/search [query]: Semantic search with pinpoint accuracy."""
+        query = " ".join(args)
+        if not self.search_engine.index_file.exists():
+            console.print("[yellow]Search index not found. Building it now...[/yellow]")
+            with console.status("Embedding all sessions..."):
+                self.search_engine.rebuild_index()
+        results = self.search_engine.search(query)
+        table = Table(title=f"🔍 Semantic Matches for: '{query}'", show_lines=True)
+        table.add_column("Score", justify="right", style="green")
+        table.add_column("Session / File", style="cyan")
+        table.add_column("Matched Turn (The 'Why')", style="yellow")
+        for r in results:
+            table.add_row(
+                f"{r['score']:.2f}",
+                f"{r['session_name']}\n[dim]{r['filename']}[/dim]",
+                f"Turn {r['turn_no']}: {r['matched_text'][:100]}..."
+            )
+        console.print(table)
         return True
 
     def cmd_set_temp(self, args):

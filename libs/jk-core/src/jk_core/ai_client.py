@@ -9,10 +9,12 @@ class GeminiClient:
         self.client = None
         self.key_id = None
 
-    def _refresh_client(self):
-        api_key, key_id = self.km.get_available_key()
+    def _refresh_client(self, model_id: str = None):
+        # CHANGE: Pass the model_id to get_available_key
+        api_key, key_id = self.km.get_available_key(model_id=model_id)
         if not api_key:
-            raise RuntimeError("All Google API keys are exhausted.")
+            # If we were specific and it failed, raise the error for chat.py fallback
+            raise PermissionError(f"MODEL_EXHAUSTED:{model_id}")
 
         self.key_id = key_id
         print(f"🔄 Switched to Key: {self.key_id}")
@@ -45,9 +47,11 @@ class GeminiClient:
             return response.text
         except Exception as e:
             if "429" in str(e) or "quota" in str(e).lower():
-                self.km.mark_exhausted(self.key_id)
-                self._refresh_client()
-                return self.generate(prompt, system_instruction)
+                # CHANGE: Pass both key and model
+                self.km.mark_exhausted(self.key_id, target_model)
+                # CHANGE: Pass model_id to only find keys with quota for THIS model
+                self._refresh_client(model_id=target_model)
+                return self.generate(prompt, system_instruction, model_name=target_model)
             raise e
 
 
@@ -81,11 +85,12 @@ class GeminiClient:
             return response.text, meta
 
         except Exception as e:
-            # Handle rotation logic as before...
             if "429" in str(e) or "quota" in str(e).lower():
-                self.km.mark_exhausted(self.key_id)
-                self._refresh_client()
-                return self.generate_with_meta(prompt, system_instruction, model_name)
+                # CHANGE: Pass both key and model
+                self.km.mark_exhausted(self.key_id, target_model)
+                # CHANGE: Pass model_id
+                self._refresh_client(model_id=target_model)
+                return self.generate_with_meta(prompt, system_instruction, model_name=target_model)
             raise e
 
     def generate_with_history(self, history: list, system_instruction: str = None, model_name: str = None):
@@ -125,15 +130,48 @@ class GeminiClient:
 
         except Exception as e:
             error_str = str(e).lower()
-            # 429 = Quota/Rate Limit
             if "429" in error_str or "quota" in error_str:
-                # 1. First, try to rotate KEY for the SAME model
                 try:
-                    self.km.mark_exhausted(self.key_id) # Mark current key/model pair (Logic needed in KM)
-                    self._refresh_client()
+                    # CHANGE: Pass both key and model
+                    self.km.mark_exhausted(self.key_id, target_model)
+                    # CHANGE: Pass model_id
+                    self._refresh_client(model_id=target_model)
                     return self.generate_with_history(history, system_instruction, target_model)
-                except RuntimeError:
-                    # 2. If NO KEYS left for this model, raise a specific error to trigger MODEL rotation
+                except (RuntimeError, PermissionError):
+                    # CHANGE: Re-raise specifically if no keys are left for THIS model
                     raise PermissionError(f"MODEL_EXHAUSTED:{target_model}")
+            raise e
+
+    def embed_content(self, text: str, model_name: str = "models/gemini-embedding-001", task_type: str = "RETRIEVAL_QUERY"):
+        """
+        Modified to accept a dynamic model name for better fallback support.
+        """
+        if not self.client:
+            self._refresh_client()
+
+        try:
+            # CHANGE: Use the model_name passed from the caller (Orchestrator)
+            result = self.client.models.embed_content(
+                model=model_name,
+                contents=text,
+                config=types.EmbedContentConfig(task_type=task_type)
+            )
+
+            # CHANGE: Access result differently based on SDK response structure
+            # Some versions use embeddings[0].values, others use result.embeddings.values
+            if hasattr(result, 'embeddings') and hasattr(result.embeddings, 'values'):
+                return result.embeddings.values
+            return result.embeddings[0].values
+
+        except Exception as e:
+            error_str = str(e).lower()
+            if "404" in error_str:
+                raise LookupError(f"Model {model_name} not found.")
+            if "429" in error_str or "quota" in error_str:
+                # CHANGE: Pass both key and model_name
+                self.km.mark_exhausted(self.key_id, model_name)
+                # CHANGE: Pass model_id
+                self._refresh_client(model_id=model_name)
+                return self.embed_content(text, model_name, task_type)
             raise e
 

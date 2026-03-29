@@ -1,8 +1,7 @@
 import json
 import time
-from pathlib import Path
 from google.genai import types
-from jk_core.constants import SHARED_CONFIG_PATH
+from jk_core.constants import SESSIONS_DIR
 
 class SessionManager:
     """
@@ -10,7 +9,7 @@ class SessionManager:
     a metadata JSON for human-readable session names.
     """
     def __init__(self, system_instruction=""):
-        self.base_dir = Path(SHARED_CONFIG_PATH) / "sessions"
+        self.base_dir = SESSIONS_DIR
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
         self.metadata_file = self.base_dir / "metadata.json"
