@@ -59,7 +59,6 @@ class GeminiClient:
             return response.text
         return self._execute_with_retry(fn, target_model)
     
-    
     def generate_with_meta(self, prompt, system_instruction=None, model_name=None):
         target_model = model_name or DEFAULT_MODEL
         def fn():
