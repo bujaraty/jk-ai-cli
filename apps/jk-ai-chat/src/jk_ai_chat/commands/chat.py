@@ -64,6 +64,7 @@ class ChatRouter:
         commands = {
             "/branch": self.cmd_branch,
             "/help": self.cmd_help,
+            "/history": self.cmd_history,
             "/copy": self.cmd_copy,
             "/edit": self.cmd_edit,
             "/latest": self.cmd_toggle_latest,
@@ -214,6 +215,7 @@ class ChatRouter:
             ("/name",    "/name [name]",        "Set display name for current session",                     True),
             ("/branch",  "",                    "Fork current session into a new branch",                   True),
             ("/edit",    "/edit [No.]",         "Time-travel: edit a past prompt (truncate/replay/branch)", True),
+            ("/history", "/history [No.]",      "Display full conversation of current or a past session",   True),
             ("/undo",    "",                    "Remove the last exchange (You + AI) from history",         True),
             ("/switch",  "/switch [tier]",      "Change model tier mid-session (lite / normal / high)",     True),
             ("/latest",  "",                    "Toggle preference for latest model versions",              True),
@@ -240,6 +242,58 @@ class ChatRouter:
 
         console.print(table)
         console.print("[dim]Tip: type 'exit' or '/exit' to quit.[/dim]")
+        return True
+
+    def cmd_history(self, args):
+        """/history [No.]: Display the full conversation of a session."""
+        import json
+
+        # Resolve which session to show
+        if args:
+            target_id = args[0]
+            if hasattr(self, '_session_map') and target_id in self._session_map:
+                target_id = self._session_map[target_id]
+            # Load into a temporary dict without clobbering current session
+            session_file = self.session.base_dir / f"{target_id}.json"
+            if not session_file.exists():
+                console.print(f"[red]Session '{target_id}' not found.[/red]")
+                console.print("[dim]Tip: run /resume first to build the session list, then use the No.[/dim]")
+                return True
+            try:
+                with open(session_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                console.print(f"[red]Session file is corrupted.[/red]")
+                return True
+            display_name = data.get("display_name", target_id)
+            history = data.get("history", [])
+        else:
+            display_name = self.session.display_name
+            history = self.session.history
+
+        if not history:
+            console.print("[dim]No messages in this session.[/dim]")
+            return True
+
+        console.print(f"\n[bold]📜 {display_name}[/bold] [dim]({len(history)} messages)[/dim]\n")
+
+        turn_no = 1
+        for turn in history:
+            role = turn.get("role", "")
+            parts = turn.get("parts", [""])
+            text = parts[0] if isinstance(parts, list) else parts
+            text = text.strip()
+
+            if role == "user":
+                console.print(f"[bold cyan]  [{turn_no}] You >[/bold cyan] {text}")
+            elif role == "model":
+                model_id = turn.get("metadata", {}).get("model", "")
+                model_label = f"[dim]({model_id.split('/')[-1]})[/dim] " if model_id else ""
+                console.print(f"[bold green]      AI >[/bold green] {model_label}{text}")
+                turn_no += 1
+
+            console.print()
+
         return True
 
     def cmd_model_info(self, args):
