@@ -11,14 +11,15 @@ console = Console()
 APP_NAME = "jk-ai"
 
 def ensure_folders():
-    """Phase 1: Basic setup of directories and empty files."""
+    """Phase 1: Basic setup of directories and config files."""
+    from jk_core.constants import CONFIG_FILE_PATH, PROMPTS_DIR, DEFAULT_IMAGE_DIR
     console.print(f"[bold blue]🚀 Initializing {CONFIG_DIR_NAME} system...[/bold blue]")
     path = Path(SHARED_CONFIG_PATH)
     path.mkdir(parents=True, exist_ok=True)
     console.print(f"📁 Workspace initialized at: [yellow]{path}[/yellow]")
 
+    # .env
     env_file = path / ".env"
-    # 3. สร้างไฟล์ .env เริ่มต้น (ถ้ายังไม่มี)
     if not env_file.exists():
         with open(env_file, "w") as f:
             f.write("# JK-AI Configuration\n")
@@ -28,8 +29,40 @@ def ensure_folders():
     else:
         console.print(f"ℹ️  .env already exists at: [dim]{env_file}[/dim]")
 
+    # prompts/ directory
+    PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+    console.print(f"📁 Prompts directory: [yellow]{PROMPTS_DIR}[/yellow]")
+
+    # config.yaml — starter template if not present
+    if not CONFIG_FILE_PATH.exists():
+        with open(CONFIG_FILE_PATH, "w", encoding="utf-8") as f:
+            f.write(
+                "# JK-AI Project Configuration\n"
+                "# Each project defines its prompt components, variables, and image output dir.\n"
+                "# Prompt component files live in: " + str(PROMPTS_DIR) + "\n\n"
+                "projects:\n"
+                "  cli-dev:\n"
+                "    components: []\n"
+                "    required_vars: []\n"
+                "    image_dir: " + str(DEFAULT_IMAGE_DIR) + "\n\n"
+                "  # Add more projects below:\n"
+                "  # my-project:\n"
+                "  #   components:\n"
+                "  #     - base.md\n"
+                "  #     - my_context.md\n"
+                "  #   required_vars: []\n"
+                "  #   image_dir: ~/Projects/my-project/images\n"
+            )
+        console.print(f"✨ Created starter config at: [green]{CONFIG_FILE_PATH}[/green]")
+    else:
+        console.print(f"ℹ️  config.yaml already exists at: [dim]{CONFIG_FILE_PATH}[/dim]")
+
+    # Default image output directory
+    DEFAULT_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    console.print(f"🖼  Default image dir: [yellow]{DEFAULT_IMAGE_DIR}[/yellow]")
+
     console.print("\n[bold green]✅ System is ready![/bold green]")
-    console.print(f"💡 [italic]Next step: Please ensures to have your API keys in {env_file}[/italic]")
+    console.print(f"💡 [italic]Edit {CONFIG_FILE_PATH} to configure your projects.[/italic]")
 
 def run_system_probe():
     # Phase 1: Discovery
