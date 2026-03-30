@@ -63,6 +63,7 @@ class ChatRouter:
         # Dispatch Table
         commands = {
             "/branch": self.cmd_branch,
+            "/help": self.cmd_help,
             "/copy": self.cmd_copy,
             "/edit": self.cmd_edit,
             "/latest": self.cmd_toggle_latest,
@@ -197,6 +198,49 @@ class ChatRouter:
         # Optional: Add logic to save current session before closing
         console.print("\n[bold yellow]👋 System offline. Goodbye![/bold yellow]")
         sys.exit(0)
+
+    def cmd_help(self, args):
+        """Lists all available commands."""
+        table = Table(title="📖 Available Commands", show_lines=True, show_header=True)
+        table.add_column("Command", style="bold cyan", no_wrap=True)
+        table.add_column("Usage", style="dim")
+        table.add_column("Description")
+        table.add_column("Status", justify="center")
+
+        all_commands = [
+            # (cmd, usage, description, ready)
+            ("/search",  "/search [query]",     "Semantic search across all past sessions",                 True),
+            ("/resume",  "/resume [No.]",       "List and resume a past session",                           True),
+            ("/name",    "/name [name]",        "Set display name for current session",                     True),
+            ("/branch",  "",                    "Fork current session into a new branch",                   True),
+            ("/edit",    "/edit [No.]",         "Time-travel: edit a past prompt (truncate/replay/branch)", True),
+            ("/undo",    "",                    "Remove the last exchange (You + AI) from history",         True),
+            ("/switch",  "/switch [tier]",      "Change model tier mid-session (lite / normal / high)",     True),
+            ("/latest",  "",                    "Toggle preference for latest model versions",              True),
+            ("/model",   "",                    "Show active model metadata and score details",             True),
+            ("/copy",    "",                    "Copy last AI response to clipboard",                       True),
+            ("/reset",   "",                    "Clear current session history",                            True),
+            ("/stats",   "",                    "Show accumulated token usage across keys/models",          False),
+            ("/save",    "",                    "Export conversation to a Markdown file",                   False),
+            ("/retry",   "",                    "Delete last AI response and resend your prompt",           False),
+            ("/new",     "",                    "Save current session and start a fresh one",               False),
+            ("/paste",   "",                    "Multi-line paste / inject a file into the prompt",        False),
+            ("/temp",    "/temp [0.0-2.0]",     "Adjust generation temperature",                            False),
+            ("/proj",    "/proj [name]",        "Swap the active project prompt profile",                   False),
+        ]
+
+        # /help first, then ready sorted, then soon sorted
+        ready_cmds = sorted([c for c in all_commands if c[3]], key=lambda x: x[0])
+        soon_cmds  = sorted([c for c in all_commands if not c[3]], key=lambda x: x[0])
+
+        table.add_row("/help", "", "Show this help table", "[green]✓[/green]")
+        for cmd, usage, desc, ready in ready_cmds + soon_cmds:
+            status = "[green]✓[/green]" if ready else "[dim]soon[/dim]"
+            table.add_row(cmd, usage, desc, status)
+
+        console.print(table)
+        console.print("[dim]Tip: type 'exit' or '/exit' to quit.[/dim]")
+        return True
 
     def cmd_model_info(self, args):
         """Shows detailed metadata of the currently active model."""
