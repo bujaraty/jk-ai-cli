@@ -9,6 +9,9 @@ dependencies = [
     "numpy",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pyyaml"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/jk_core"]
 

@@ -1,0 +1,12 @@
+#!/bin/bash
+# Run jk-core test suite
+# Usage:
+#   ./test.sh          — run all tests
+#   ./test.sh -x       — stop on first failure
+#   ./test.sh -k name  — run tests matching a name
+
+set -e
+
+cd "$(dirname "$0")"
+
+uv run pytest libs/jk-core/tests/ -v "$@"
