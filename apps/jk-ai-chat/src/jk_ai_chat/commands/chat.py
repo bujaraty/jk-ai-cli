@@ -245,15 +245,26 @@ class ChatRouter:
 
         # 1. If no ID provided, show the list
         if not args:
+            from datetime import datetime
             table = Table(title="🕒 Recently Active Sessions (Top 20)", show_lines=True)
             table.add_column("No.", justify="center", style="dim")
-            table.add_column("Session ID", style="cyan")
             table.add_column("Name", style="bold yellow")
+            table.add_column("Messages", justify="right", style="cyan")
+            table.add_column("Last Active", style="dim")
 
             self._session_map = {}
             for i, (sess_id, info) in enumerate(recent, 1):
                 self._session_map[str(i)] = sess_id
-                table.add_row(str(i), sess_id, info['name'])
+
+                msg_count = str(info.get('message_count', '-'))
+
+                updated_at = info.get('updated_at')
+                if updated_at:
+                    last_active = datetime.fromtimestamp(updated_at).strftime('%Y-%m-%d %H:%M')
+                else:
+                    last_active = '-'
+
+                table.add_row(str(i), info['name'], msg_count, last_active)
 
             console.print(table)
             console.print("[dim]Type '/resume [No.]' to load a session.[/dim]")

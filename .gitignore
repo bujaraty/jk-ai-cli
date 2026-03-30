@@ -1,6 +1,7 @@
 # Python  
 setup_w.sh
 tmp.py
+milestone.txt
 __pycache__/
 *.py[cod]
 *$py.class

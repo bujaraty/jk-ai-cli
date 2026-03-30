@@ -63,13 +63,40 @@ class SessionManager:
 
     def get_recent_sessions(self, limit=20):
         meta = self._load_metadata()
-        # Sort by timestamp descending
-        sorted_meta = sorted(
-            meta.items(),
+        needs_save = False
+
+        valid = {}
+        for sess_id, info in meta.items():
+            session_file = self.base_dir / f"{sess_id}.json"
+
+            # Skip missing or corrupted files
+            if not session_file.exists():
+                continue
+            try:
+                with open(session_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+
+            # Backfill message_count and updated_at if missing (legacy sessions)
+            if 'message_count' not in info or 'updated_at' not in info:
+                history = data.get('history', [])
+                info['message_count'] = len(history)
+                info['updated_at'] = int(session_file.stat().st_mtime)
+                meta[sess_id] = info
+                needs_save = True
+
+            valid[sess_id] = info
+
+        if needs_save:
+            self._save_metadata(meta)
+
+        sorted_valid = sorted(
+            valid.items(),
             key=lambda x: x[1].get('updated_at', 0),
             reverse=True
         )
-        return sorted_meta[:limit]
+        return sorted_valid[:limit]
 
     def get_last_turns(self, n=5):
         return self.history[-(n*2):] if self.history else []
@@ -83,12 +110,16 @@ class SessionManager:
         if not session_file.exists():
             return False
 
-        with open(session_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            self.session_id = data.get("session_id", session_id)
-            self.display_name = data.get("display_name", "Unnamed")
-            self.system_instruction = data.get("system_instruction", "")
-            self.history = data.get("history", [])
+        try:
+            with open(session_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return False
+
+        self.session_id = data.get("session_id", session_id)
+        self.display_name = data.get("display_name", "Unnamed")
+        self.system_instruction = data.get("system_instruction", "")
+        self.history = data.get("history", [])
 
         # Refresh the index entry
         self._update_meta_entry()
