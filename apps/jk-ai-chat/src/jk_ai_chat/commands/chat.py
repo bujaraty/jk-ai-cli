@@ -8,6 +8,7 @@ from rich.columns import Columns
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
+from prompt_toolkit.history import FileHistory
 from jk_core.prompt_engine import assemble_prompt, get_required_vars
 from jk_core.ai_client import GeminiClient
 from jk_core.orchestrator import Orchestrator
@@ -16,8 +17,11 @@ from jk_core.search_engine import SearchEngine
 
 console = Console()
 
-# Shared prompt_toolkit session — preserves input history across turns
-_pt_session: PromptSession = PromptSession()
+# Shared prompt_toolkit session — persists input history across runs
+from jk_core.constants import SHARED_CONFIG_PATH
+from pathlib import Path
+_pt_history_file = Path(SHARED_CONFIG_PATH) / "prompt_history"
+_pt_session: PromptSession = PromptSession(history=FileHistory(str(_pt_history_file)))
 
 # Cyan bold to match existing rich palette
 _pt_style = Style.from_dict({"prompt": "ansicyan bold"})
