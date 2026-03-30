@@ -9,6 +9,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.completion import Completer, Completion
 from jk_core.prompt_engine import assemble_prompt, get_required_vars
 from jk_core.ai_client import GeminiClient
 from jk_core.orchestrator import Orchestrator
@@ -17,11 +18,27 @@ from jk_core.search_engine import SearchEngine
 
 console = Console()
 
+SLASH_COMMANDS = [
+    "/branch", "/copy", "/edit", "/help", "/history", "/latest",
+    "/model", "/name", "/new", "/paste", "/proj", "/reset",
+    "/resume", "/retry", "/save", "/search", "/stats", "/switch",
+    "/temp", "/undo",
+]
+
+class _SlashCompleter(Completer):
+    """Tab-completes slash commands at the start of the input."""
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if text.startswith("/"):
+            for cmd in SLASH_COMMANDS:
+                if cmd.startswith(text):
+                    yield Completion(cmd, start_position=-len(text))
+
 # Shared prompt_toolkit session — persists input history across runs
 from jk_core.constants import SHARED_CONFIG_PATH
 from pathlib import Path
 _pt_history_file = Path(SHARED_CONFIG_PATH) / "prompt_history"
-_pt_session: PromptSession = PromptSession(history=FileHistory(str(_pt_history_file)))
+_pt_session: PromptSession = PromptSession(history=FileHistory(str(_pt_history_file)), completer=_SlashCompleter())
 
 # Cyan bold to match existing rich palette
 _pt_style = Style.from_dict({"prompt": "ansicyan bold"})
