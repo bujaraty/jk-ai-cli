@@ -9,7 +9,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
 from prompt_toolkit.history import FileHistory
-from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.completion import Completer, Completion, PathCompleter, merge_completers
 from jk_core.prompt_engine import assemble_prompt, get_required_vars
 from jk_core.ai_client import GeminiClient
 from jk_core.orchestrator import Orchestrator
@@ -20,15 +20,32 @@ console = Console()
 
 SLASH_COMMANDS = [
     "/branch", "/copy", "/edit", "/help", "/history", "/latest",
-    "/model", "/name", "/new", "/paste", "/proj", "/reset",
+    "/attach", "/model", "/name", "/new", "/proj", "/reset",
     "/resume", "/retry", "/save", "/search", "/stats", "/switch",
     "/temp", "/undo",
 ]
 
 class _SlashCompleter(Completer):
-    """Tab-completes slash commands at the start of the input."""
+    """
+    Tab-completes slash commands at the start of input.
+    After /attach, switches to path completion for the file argument.
+    """
+    def __init__(self):
+        self._path = PathCompleter(expanduser=True)
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
+
+        # /attach <path> — delegate to path completer for the argument
+        if text.lower().startswith("/attach "):
+            # Shift the document to just the path portion
+            from prompt_toolkit.document import Document
+            path_text = text[len("/attach "):]
+            path_doc = Document(path_text, len(path_text))
+            yield from self._path.get_completions(path_doc, complete_event)
+            return
+
+        # Slash command completion at start of input
         if text.startswith("/"):
             for cmd in SLASH_COMMANDS:
                 if cmd.startswith(text):
@@ -88,7 +105,7 @@ class ChatRouter:
             "/model": self.cmd_model_info,
             "/name": self.cmd_name,
             "/new": self.cmd_new_chat,
-            "/paste": self.cmd_paste,
+            "/attach": self.cmd_attach,
             "/proj": self.cmd_switch_proj,
             "/reset": self.cmd_reset,
             "/resume": self.cmd_resume,
@@ -243,7 +260,7 @@ class ChatRouter:
             ("/save",    "",                    "Export conversation to a Markdown file",                   False),
             ("/retry",   "",                    "Delete last AI response and resend your prompt",           False),
             ("/new",     "",                    "Save current session and start a fresh one",               False),
-            ("/paste",   "",                    "Multi-line paste / inject a file into the prompt",        False),
+            ("/attach",  "/attach [file] [prompt]", "Attach a file — no args opens the OS file picker",        True),
             ("/temp",    "/temp [0.0-2.0]",     "Adjust generation temperature",                            False),
             ("/proj",    "/proj [name]",        "Swap the active project prompt profile",                   False),
         ]
@@ -337,10 +354,35 @@ class ChatRouter:
         console.print("[dim]⚠️  /new is not yet implemented.[/dim]")
         return True
 
-    def cmd_paste(self, args):
-        """Simulates a multi-line paste or injects a file into the prompt."""
-        console.print("[dim]⚠️  /paste is not yet implemented.[/dim]")
-        return True
+    def cmd_attach(self, args):
+        """/attach [file_path] [optional prompt]: Attach a file to the next request."""
+        from pathlib import Path as _Path
+
+        if not args:
+            # No path given — open the native OS file picker
+            console.print("[dim]Opening file picker...[/dim]")
+            file_path = _pick_file()
+            if not file_path:
+                console.print("[dim]No file selected.[/dim]")
+                return True
+            # Ask for an optional prompt after picking
+            from prompt_toolkit.formatted_text import FormattedText
+            prompt_text = _pt_session.prompt(
+                FormattedText([("ansicyan bold", f"Prompt for {file_path.name} (Enter to skip): ")])
+            ).strip() or "Please describe this file."
+        else:
+            file_path = _Path(args[0]).expanduser().resolve()
+            prompt_text = " ".join(args[1:]) if len(args) > 1 else "Please describe this file."
+
+        if not file_path.exists():
+            console.print(f"[red]File not found:[/red] {file_path}")
+            return True
+
+        size_kb = file_path.stat().st_size / 1024
+        console.print(f"[dim]📎 Attached: {file_path.name} ({size_kb:.1f} KB)[/dim]")
+
+        # Signal the chat loop to use file attachment for the next request
+        return {"attach": True, "path": file_path, "prompt": prompt_text}
 
     def cmd_reset(self, args):
         self.session.history = []
@@ -624,6 +666,152 @@ def _run_autoname(client, session, response_text):
             f"[cyan]{lite_model.split('/')[-1]}[/cyan]: [bold]{clean_title}[/bold][/dim]"
         )
 
+def _pick_file():
+    """
+    Opens the native OS file picker and returns the selected Path, or None
+    if the user cancelled. Uses tkinter which ships with Python on all platforms.
+    On macOS the Finder sheet appears; on Windows the Explorer dialog; on Linux
+    the GTK or Tk dialog depending on the desktop.
+    """
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()          # hide the empty root window
+        root.call('wm', 'attributes', '.', '-topmost', True)  # bring to front
+        path_str = filedialog.askopenfilename(
+            title="Select a file to attach",
+            filetypes=[
+                ("All supported", "*.pdf *.jpg *.jpeg *.png *.gif *.webp "
+                                  "*.txt *.md *.py *.js *.ts *.json *.csv "
+                                  "*.yaml *.yml *.toml *.sh *.html *.css"),
+                ("PDF",           "*.pdf"),
+                ("Images",        "*.jpg *.jpeg *.png *.gif *.webp"),
+                ("Text / Code",   "*.txt *.md *.py *.js *.ts *.json *.csv"),
+                ("All files",     "*.*"),
+            ]
+        )
+        root.destroy()
+        # Return focus to the terminal so the user doesn't have to click back
+        try:
+            import subprocess, sys
+            if sys.platform == "darwin":
+                # Reactivate the terminal app that launched us
+                subprocess.run(
+                    ["osascript", "-e",
+                     'tell application "System Events" to set frontmost of '
+                     '(first process whose unix id is (do shell script "echo $PPID")) to true'],
+                    capture_output=True
+                )
+        except Exception:
+            pass
+        return Path(path_str) if path_str else None
+    except Exception as e:
+        return None
+
+
+SUPPORTED_MIME_TYPES = {
+    ".pdf":  "application/pdf",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png":  "image/png",
+    ".gif":  "image/gif",
+    ".webp": "image/webp",
+}
+TEXT_EXTENSIONS = {".txt", ".md", ".py", ".js", ".ts", ".json", ".csv",
+                   ".yaml", ".yml", ".toml", ".sh", ".html", ".css"}
+
+
+def _build_file_part(file_path, prompt_text: str):
+    """
+    Builds a types.Content with role="user" containing the file and prompt.
+    Binary files (PDF, images) are sent as bytes with MIME type.
+    Text/code files are inlined as a text part.
+    Returns the Content object or raises ValueError for unsupported types.
+    """
+    from google.genai import types as _types
+    suffix = file_path.suffix.lower()
+
+    if suffix in SUPPORTED_MIME_TYPES:
+        mime = SUPPORTED_MIME_TYPES[suffix]
+        data = file_path.read_bytes()
+        return _types.Content(
+            role="user",
+            parts=[
+                _types.Part.from_bytes(data=data, mime_type=mime),
+                _types.Part(text=prompt_text),
+            ]
+        )
+    elif suffix in TEXT_EXTENSIONS or suffix == "":
+        # Extensionless files (e.g. .gitignore, Makefile, Dockerfile) treated as plain text
+        text_content = file_path.read_text(encoding="utf-8", errors="replace")
+        combined = (
+            f"File: {file_path.name}\n"
+            f"```\n{text_content}\n```\n\n"
+            f"{prompt_text}"
+        )
+        return _types.Content(
+            role="user",
+            parts=[_types.Part(text=combined)]
+        )
+    else:
+        raise ValueError(
+            f"Unsupported file type: {suffix}\n"
+            f"Supported: pdf, images (jpg/png/gif/webp), text/code files, and extensionless files"
+        )
+
+
+def _run_file_stream(client, session, rankings, model_id, file_path, prompt_text):
+    """Streams a one-shot file-attached request and saves only the text prompt to history."""
+    try:
+        file_part = _build_file_part(file_path, prompt_text)
+    except ValueError as e:
+        console.print(f"[red]❌ {e}[/red]")
+        return
+
+    # Save prompt text to history (not the file — one-shot only)
+    session.add_message("user", f"[attached: {file_path.name}] {prompt_text}")
+
+    response_text = ""
+    used_mid = model_id
+
+    for candidate in rankings:
+        used_mid = candidate["id"]
+        try:
+            key_before = client.key_id
+            console.print(f"[dim][API] stream_with_file | key={key_before} | model={used_mid.split('/')[-1]}[/dim]")
+            console.print(f"[bold green]AI ({key_before} | {used_mid.split('/')[-1]}) >[/bold green] ", end="")
+            for chunk in client.stream_with_file(
+                history=session.history[:-1],  # exclude the just-added user message
+                file_part=file_part,
+                system_instruction=session.system_instruction,
+                model_name=used_mid
+            ):
+                print(chunk, end="", flush=True)
+                response_text += chunk
+            print()
+            if client.key_id != key_before:
+                console.print(f"[dim](↑ served by {client.key_id} | {used_mid.split('/')[-1]} after key rotation)[/dim]")
+            break
+        except PermissionError as e:
+            if "MODEL_EXHAUSTED" in str(e):
+                console.print(f"\n[dim yellow]⚠️  {used_mid} exhausted. Falling back...[/dim yellow]")
+                response_text = ""
+                continue
+            raise
+    else:
+        console.print("[red]All models exhausted.[/red]")
+        session.history.pop()
+        return
+
+    session.add_message("model", response_text, model_id=used_mid)
+    try:
+        _run_autoname(client, session, response_text)
+    except Exception:
+        pass
+    _print_token_stats(client, client.last_meta, used_mid)
+
+
 def _read_input(prompt_label: str) -> str:
     """
     Reads user input via prompt_toolkit.
@@ -654,6 +842,12 @@ def _run_chat_loop(client, session, router, rankings, model_id):
 
         if isinstance(cmd_result, dict) and cmd_result.get("replay"):
             _handle_replay(client, session, rankings, cmd_result["prompts"], model_id)
+            user_input = None
+            continue
+
+        if isinstance(cmd_result, dict) and cmd_result.get("attach"):
+            _run_file_stream(client, session, rankings, model_id,
+                             cmd_result["path"], cmd_result["prompt"])
             user_input = None
             continue
 

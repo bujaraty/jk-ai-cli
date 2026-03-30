@@ -163,6 +163,73 @@ class GeminiClient:
     
         raise PermissionError(f"MODEL_EXHAUSTED:{target_model}")
     
+    def stream_with_file(self, history, file_part, system_instruction=None, model_name=None):
+        """
+        One-shot file attachment stream.
+
+        Sends the full history plus a final user turn containing both the
+        file and the text prompt. The file is NOT stored in history —
+        it exists only for this single request.
+
+        file_part: a types.Content object with role="user" containing
+                   the file Part and the text Part.
+        """
+        target_model = model_name or DEFAULT_MODEL
+        max_attempts = len(self.km._load_keys()) or 3
+
+        for attempt in range(max_attempts):
+            try:
+                if not self.client:
+                    self._refresh_client(model_id=target_model)
+                self._log_call("stream_with_file", target_model)
+                yield from self._do_stream_with_file(history, file_part, system_instruction, target_model)
+                return
+            except PermissionError:
+                raise
+            except Exception as e:
+                error_str = str(e).lower()
+                if "429" in error_str or "quota" in error_str:
+                    self.km.mark_exhausted(self.key_id, target_model)
+                    self._refresh_client(model_id=target_model)
+                    continue
+                raise
+
+        raise PermissionError(f"MODEL_EXHAUSTED:{target_model}")
+
+    def _do_stream_with_file(self, history, file_part, system_instruction, target_model):
+        """Private generator for file-attached streaming."""
+        formatted_history = [
+            types.Content(
+                role=turn["role"],
+                parts=[types.Part(text=(turn.get("parts", [""])[0]
+                                        if isinstance(turn.get("parts"), list)
+                                        else str(turn.get("parts", ""))))]
+            )
+            for turn in history
+        ]
+        # Append the file turn as the final user message
+        contents = formatted_history + [file_part]
+
+        response = self.client.models.generate_content_stream(
+            model=target_model,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction
+            ) if system_instruction else None
+        )
+
+        last_chunk = None
+        for chunk in response:
+            text = chunk.text or ""
+            last_chunk = chunk
+            yield text
+
+        self.last_meta = getattr(last_chunk, 'usage_metadata', None)
+        if self.last_meta:
+            self.km.record_usage(self.key_id, target_model,
+                                 self.last_meta.prompt_token_count,
+                                 self.last_meta.candidates_token_count)
+
     def _do_stream(self, history, system_instruction, target_model):
         """Private generator — just streams, no retry logic."""
         formatted_history = [
