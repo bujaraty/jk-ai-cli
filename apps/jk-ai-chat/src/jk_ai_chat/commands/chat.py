@@ -557,11 +557,26 @@ def _init_client() -> GeminiClient:
     return client
 
 def _print_token_stats(client, meta, model_id):
-    """Prints last-request and accumulated token usage panels."""
+    """Prints last-request and daily accumulated token usage panels."""
     if not meta:
         return
+    from datetime import datetime, timezone
     state = client.km._load_state()
     acc = state.get("usage", {}).get(client.key_id, {}).get("models", {}).get(model_id, {})
+
+    # Label shows which key/model this accumulation is for
+    model_short = model_id.split("/")[-1]
+    acc_title = f"[bold]Today ({client.key_id} | {model_short})[/bold]"
+
+    # Show window start if available so user knows when the counter began
+    window_start = acc.get("window_start")
+    window_label = ""
+    if window_start:
+        try:
+            dt = datetime.fromisoformat(window_start).astimezone()
+            window_label = f"\n[dim]since {dt.strftime('%H:%M')}[/dim]"
+        except ValueError:
+            pass
 
     p1 = Panel(
         f"In:  [green]{meta.prompt_token_count}[/green]\n"
@@ -572,8 +587,9 @@ def _print_token_stats(client, meta, model_id):
     p2 = Panel(
         f"Reqs: [magenta]{acc.get('request_count', 0)}[/magenta]\n"
         f"In:   [green]{acc.get('total_input_tokens', 0)}[/green]\n"
-        f"Out:  [blue]{acc.get('total_output_tokens', 0)}[/blue]",
-        title="[bold]Accumulated (Global)[/bold]", border_style="dim", expand=False
+        f"Out:  [blue]{acc.get('total_output_tokens', 0)}[/blue]"
+        f"{window_label}",
+        title=acc_title, border_style="dim", expand=False
     )
     console.print(Columns([p1, p2]))
 

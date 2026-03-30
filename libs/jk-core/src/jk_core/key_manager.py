@@ -103,35 +103,64 @@ class KeyManager:
 
         self._save_state(state)
 
+    def _daily_reset_time(self, now_utc: datetime) -> datetime:
+        """Returns the next 08:00 UTC reset boundary from now."""
+        reset = now_utc.replace(hour=8, minute=0, second=0, microsecond=0)
+        if now_utc >= reset:
+            reset += timedelta(days=1)
+        return reset
+
     def record_usage(self, key_id: str, model_id: str, input_tokens: int, output_tokens: int):
         """
-        Increments request and token counts for a specific key/model pair.
-        Also initializes the model entry if it doesn't exist.
+        Increments daily request and token counts for a specific key/model pair.
+        Resets counters automatically when the daily 08:00 UTC window rolls over,
+        keeping accumulated totals in sync with the exhaustion reset cycle.
         """
         state = self._load_state()
-        
-        # Ensure the nested structure exists
+        now_utc = datetime.now(timezone.utc)
+
+        # Ensure nested structure exists
         if "usage" not in state:
             state["usage"] = {}
         if key_id not in state["usage"]:
             state["usage"][key_id] = {"models": {}}
-            
+
         models_usage = state["usage"][key_id]["models"]
-        
-        # Initialize the specific model entry if new
+
+        # Initialize entry if new
         if model_id not in models_usage:
             models_usage[model_id] = {
                 "request_count": 0,
                 "total_input_tokens": 0,
                 "total_output_tokens": 0,
-                "status": "active", # NEW: Default status
-                "last_used": None
+                "status": "active",
+                "last_used": None,
+                "window_start": now_utc.isoformat(),
             }
-            
+
         entry = models_usage[model_id]
+
+        # Check if the daily window has rolled over — if so, reset counters
+        reset_at_str = entry.get("reset_at")
+        if reset_at_str:
+            try:
+                reset_at = datetime.fromisoformat(reset_at_str)
+                if reset_at.tzinfo is None:
+                    reset_at = reset_at.replace(tzinfo=timezone.utc)
+                if now_utc >= reset_at:
+                    entry["request_count"] = 0
+                    entry["total_input_tokens"] = 0
+                    entry["total_output_tokens"] = 0
+                    entry["status"] = "active"
+                    entry["window_start"] = now_utc.isoformat()
+                    # Advance reset_at to the next window
+                    entry["reset_at"] = self._daily_reset_time(now_utc).isoformat()
+            except ValueError:
+                pass  # Corrupted date, skip reset
+
         entry["request_count"] += 1
         entry["total_input_tokens"] += input_tokens
         entry["total_output_tokens"] += output_tokens
-        entry["last_used"] = datetime.now(timezone.utc).isoformat()
-        
+        entry["last_used"] = now_utc.isoformat()
+
         self._save_state(state)
