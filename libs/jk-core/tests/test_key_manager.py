@@ -373,3 +373,157 @@ class TestRecordUsage:
         km.record_usage("key_a", "models/gemini-flash", 10, 5)
         entry = read_state(tmp_config)["usage"]["key_a"]["models"]["models/gemini-flash"]
         assert entry["window_start"] != old_start
+
+# ---------------------------------------------------------------------------
+# _append_usage_history / usage_history.jsonl
+# ---------------------------------------------------------------------------
+
+class TestUsageHistory:
+    def test_history_file_created_on_rollover(self, tmp_config):
+        km = make_km(tmp_config)
+        state = {
+            "usage": {
+                "key_a": {
+                    "models": {
+                        "models/gemini-flash": {
+                            "request_count": 5,
+                            "total_input_tokens": 100,
+                            "total_output_tokens": 50,
+                            "status": "active",
+                            "last_used": past(25),
+                            "window_start": past(25),
+                            "reset_at": past(2),
+                        }
+                    }
+                }
+            }
+        }
+        write_state(tmp_config, state)
+        km.record_usage("key_a", "models/gemini-flash", 10, 5)
+        assert (tmp_config / "usage_history.jsonl").exists()
+
+    def test_history_line_contains_correct_fields(self, tmp_config):
+        km = make_km(tmp_config)
+        state = {
+            "usage": {
+                "key_a": {
+                    "models": {
+                        "models/gemini-flash": {
+                            "request_count": 5,
+                            "total_input_tokens": 100,
+                            "total_output_tokens": 50,
+                            "status": "active",
+                            "last_used": past(25),
+                            "window_start": "2026-03-30T08:00:00+00:00",
+                            "reset_at": past(2),
+                        }
+                    }
+                }
+            }
+        }
+        write_state(tmp_config, state)
+        km.record_usage("key_a", "models/gemini-flash", 10, 5)
+
+        lines = (tmp_config / "usage_history.jsonl").read_text().strip().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["date"] == "2026-03-30"
+        assert record["key_id"] == "key_a"
+        assert record["model_id"] == "models/gemini-flash"
+        assert record["requests"] == 5
+        assert record["input_tokens"] == 100
+        assert record["output_tokens"] == 50
+
+    def test_no_history_written_within_same_window(self, tmp_config):
+        km = make_km(tmp_config)
+        state = {
+            "usage": {
+                "key_a": {
+                    "models": {
+                        "models/gemini-flash": {
+                            "request_count": 5,
+                            "total_input_tokens": 100,
+                            "total_output_tokens": 50,
+                            "status": "active",
+                            "last_used": past(1),
+                            "window_start": past(1),
+                            "reset_at": future(10),  # still in current window
+                        }
+                    }
+                }
+            }
+        }
+        write_state(tmp_config, state)
+        km.record_usage("key_a", "models/gemini-flash", 10, 5)
+        assert not (tmp_config / "usage_history.jsonl").exists()
+
+    def test_multiple_rollovers_append_multiple_lines(self, tmp_config):
+        """Each key/model rollover appends a separate line."""
+        km = make_km(tmp_config)
+        # Two models, both with expired windows
+        state = {
+            "usage": {
+                "key_a": {
+                    "models": {
+                        "models/gemini-flash": {
+                            "request_count": 3,
+                            "total_input_tokens": 60,
+                            "total_output_tokens": 30,
+                            "status": "active",
+                            "last_used": past(25),
+                            "window_start": past(25),
+                            "reset_at": past(2),
+                        },
+                        "models/gemini-pro": {
+                            "request_count": 1,
+                            "total_input_tokens": 200,
+                            "total_output_tokens": 80,
+                            "status": "active",
+                            "last_used": past(25),
+                            "window_start": past(25),
+                            "reset_at": past(2),
+                        },
+                    }
+                }
+            }
+        }
+        write_state(tmp_config, state)
+        km.record_usage("key_a", "models/gemini-flash", 10, 5)
+        km.record_usage("key_a", "models/gemini-pro", 20, 8)
+
+        lines = (tmp_config / "usage_history.jsonl").read_text().strip().split("\n")
+        assert len(lines) == 2
+        models_logged = {json.loads(l)["model_id"] for l in lines}
+        assert "models/gemini-flash" in models_logged
+        assert "models/gemini-pro" in models_logged
+
+    def test_history_not_written_for_new_entry_without_reset_at(self, tmp_config):
+        """Brand new entries have no reset_at yet — no history should be written."""
+        km = make_km(tmp_config)
+        km.record_usage("key_a", "models/gemini-flash", 10, 5)
+        assert not (tmp_config / "usage_history.jsonl").exists()
+
+    def test_corrupted_window_start_uses_unknown_date(self, tmp_config):
+        km = make_km(tmp_config)
+        state = {
+            "usage": {
+                "key_a": {
+                    "models": {
+                        "models/gemini-flash": {
+                            "request_count": 1,
+                            "total_input_tokens": 10,
+                            "total_output_tokens": 5,
+                            "status": "active",
+                            "last_used": past(25),
+                            "window_start": "not-a-date",
+                            "reset_at": past(2),
+                        }
+                    }
+                }
+            }
+        }
+        write_state(tmp_config, state)
+        km.record_usage("key_a", "models/gemini-flash", 10, 5)
+        lines = (tmp_config / "usage_history.jsonl").read_text().strip().split("\n")
+        record = json.loads(lines[0])
+        assert record["date"] == "unknown"

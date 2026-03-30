@@ -103,6 +103,26 @@ class KeyManager:
 
         self._save_state(state)
 
+    def _append_usage_history(self, key_id: str, model_id: str, entry: dict, window_start: str):
+        """Appends the completed window's usage as one line to usage_history.jsonl."""
+        import json as _json
+        history_file = self.config_dir / "usage_history.jsonl"
+        # Parse date from window_start for the log line
+        try:
+            date_str = datetime.fromisoformat(window_start).strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            date_str = "unknown"
+        record = {
+            "date":           date_str,
+            "key_id":         key_id,
+            "model_id":       model_id,
+            "requests":       entry.get("request_count", 0),
+            "input_tokens":   entry.get("total_input_tokens", 0),
+            "output_tokens":  entry.get("total_output_tokens", 0),
+        }
+        with open(history_file, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(record) + "\n")
+
     def _daily_reset_time(self, now_utc: datetime) -> datetime:
         """Returns the next 08:00 UTC reset boundary from now."""
         reset = now_utc.replace(hour=8, minute=0, second=0, microsecond=0)
@@ -148,6 +168,11 @@ class KeyManager:
                 if reset_at.tzinfo is None:
                     reset_at = reset_at.replace(tzinfo=timezone.utc)
                 if now_utc >= reset_at:
+                    # Archive the expiring window before resetting
+                    self._append_usage_history(
+                        key_id, model_id, entry,
+                        window_start=entry.get("window_start", "")
+                    )
                     entry["request_count"] = 0
                     entry["total_input_tokens"] = 0
                     entry["total_output_tokens"] = 0
