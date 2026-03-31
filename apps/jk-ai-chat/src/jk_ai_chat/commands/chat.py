@@ -236,8 +236,8 @@ class ChatRouter:
             ("/name",    "/name [name]",        "Set display name for current session",                     True),
             ("/branch",  "",                    "Fork current session into a new branch",                   True),
             ("/edit",    "/edit [No.]",         "Time-travel: edit a past prompt (truncate/replay/branch)", True),
-            ("/export",  "/export [last [N]] [--format md|txt|json|pdf] [path]",
-                                             "Export last N exchanges in md, txt, json, or pdf",        True),
+            ("/export",  "/export [last [N]] [--format md|txt|json|pdf|docx] [path]",
+                                             "Export last N exchanges in md, txt, json, pdf, or docx",  True),
             ("/history", "/history [No.]",      "Display full conversation of current or a past session",   True),
             ("/undo",    "",                    "Remove the last exchange (You + AI) from history",         True),
             ("/switch",  "/switch [tier]",      "Change model tier mid-session (lite / normal / high)",     True),
@@ -288,7 +288,7 @@ class ChatRouter:
             if idx + 1 < len(remaining):
                 fmt = remaining[idx + 1].lower()
                 remaining = remaining[:idx] + remaining[idx + 2:]
-            if fmt not in ("md", "txt", "json", "pdf"):
+            if fmt not in ("md", "txt", "json", "pdf", "docx"):
                 console.print("[red]Unknown format. Use: md, txt, or json.[/red]")
                 return True
 
@@ -369,6 +369,10 @@ class ChatRouter:
             }
             content_str = _json.dumps(payload, indent=2, ensure_ascii=False)
 
+        elif fmt == "docx":
+            ext = ".docx"
+            content_str = None  # docx is written directly to file
+
         elif fmt == "pdf":
             ext = ".pdf"
             content_str = None  # PDF is written directly to file
@@ -382,7 +386,58 @@ class ChatRouter:
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if fmt == "pdf":
+        if fmt == "docx":
+            try:
+                from docx import Document as _Document
+                from docx.shared import Pt, RGBColor
+                from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+                doc = _Document()
+
+                # Page margins (2cm all sides)
+                for section in doc.sections:
+                    section.top_margin    = Pt(56)
+                    section.bottom_margin = Pt(56)
+                    section.left_margin   = Pt(72)
+                    section.right_margin  = Pt(72)
+
+                # Title
+                title_para = doc.add_heading(self.session.display_name, level=0)
+                title_para.runs[0].font.color.rgb = RGBColor(0, 0, 0)
+
+                # Meta line
+                meta = doc.add_paragraph()
+                meta.add_run(f"Exported: {_dt.now().strftime('%Y-%m-%d %H:%M')}  ·  Exchanges: {label}")
+                meta.runs[0].font.size = Pt(9)
+                meta.runs[0].font.color.rgb = RGBColor(120, 120, 120)
+
+                doc.add_paragraph()  # spacer
+
+                turn_no = 1
+                for turn in history:
+                    role  = turn.get("role", "")
+                    parts = turn.get("parts", [""])
+                    text  = (parts[0] if isinstance(parts, list) else parts).strip()
+
+                    if role == "user":
+                        h = doc.add_heading(f"Turn {turn_no} — You", level=2)
+                        h.runs[0].font.color.rgb = RGBColor(0, 0, 0)
+                        doc.add_paragraph(text)
+                    elif role == "model":
+                        model_id = turn.get("metadata", {}).get("model", "")
+                        model_label = f" (via {model_id.split('/')[-1]})" if model_id else ""
+                        h = doc.add_heading(f"AI{model_label}", level=3)
+                        h.runs[0].font.color.rgb = RGBColor(46, 125, 50)
+                        doc.add_paragraph(text)
+                        doc.add_paragraph()  # spacer between exchanges
+                        turn_no += 1
+
+                doc.save(str(out_path))
+            except ImportError:
+                console.print("[red]❌ docx export requires python-docx. Run: uv add python-docx[/red]")
+                return True
+
+        elif fmt == "pdf":
             try:
                 from reportlab.lib.pagesizes import A4
                 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
