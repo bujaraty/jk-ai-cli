@@ -9,7 +9,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
 from prompt_toolkit.history import FileHistory
-from prompt_toolkit.completion import Completer, Completion, PathCompleter, merge_completers
+from prompt_toolkit.completion import Completer, Completion
 from jk_core.prompt_engine import assemble_prompt, get_required_vars
 from jk_core.ai_client import GeminiClient
 from jk_core.orchestrator import Orchestrator
@@ -20,7 +20,7 @@ console = Console()
 
 SLASH_COMMANDS = [
     "/branch", "/copy", "/edit", "/help", "/history", "/latest",
-    "/attach", "/model", "/name", "/new", "/proj", "/reset",
+    "/model", "/name", "/new", "/proj", "/reset",
     "/resume", "/retry", "/save", "/search", "/stats", "/switch",
     "/temp", "/undo",
 ]
@@ -28,22 +28,9 @@ SLASH_COMMANDS = [
 class _SlashCompleter(Completer):
     """
     Tab-completes slash commands at the start of input.
-    After /attach, switches to path completion for the file argument.
     """
-    def __init__(self):
-        self._path = PathCompleter(expanduser=True)
-
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
-
-        # /attach <path> — delegate to path completer for the argument
-        if text.lower().startswith("/attach "):
-            # Shift the document to just the path portion
-            from prompt_toolkit.document import Document
-            path_text = text[len("/attach "):]
-            path_doc = Document(path_text, len(path_text))
-            yield from self._path.get_completions(path_doc, complete_event)
-            return
 
         # Slash command completion at start of input
         if text.startswith("/"):
@@ -105,7 +92,6 @@ class ChatRouter:
             "/model": self.cmd_model_info,
             "/name": self.cmd_name,
             "/new": self.cmd_new_chat,
-            "/attach": self.cmd_attach,
             "/proj": self.cmd_switch_proj,
             "/reset": self.cmd_reset,
             "/resume": self.cmd_resume,
@@ -256,11 +242,10 @@ class ChatRouter:
             ("/model",   "",                    "Show active model metadata and score details",             True),
             ("/copy",    "",                    "Copy last AI response to clipboard",                       True),
             ("/reset",   "",                    "Clear current session history",                            True),
-            ("/stats",   "",                    "Show accumulated token usage across keys/models",          False),
-            ("/save",    "",                    "Export conversation to a Markdown file",                   False),
-            ("/retry",   "",                    "Delete last AI response and resend your prompt",           False),
+            ("/stats",   "",                    "Show today\'s token usage across all keys and models",    True),
+            ("/save",    "/save [path]",         "Export conversation to a Markdown file",                   True),
+            ("/retry",   "",                    "Remove last AI response and resend your prompt",           True),
             ("/new",     "",                    "Save current session and start a fresh one",               False),
-            ("/attach",  "/attach [file] [prompt]", "Attach a file — no args opens the OS file picker",        True),
             ("/temp",    "/temp [0.0-2.0]",     "Adjust generation temperature",                            False),
             ("/proj",    "/proj [name]",        "Swap the active project prompt profile",                   False),
         ]
@@ -329,7 +314,6 @@ class ChatRouter:
             console.print()
 
         return True
-
     def cmd_model_info(self, args):
         """Shows detailed metadata of the currently active model."""
         return True
@@ -353,37 +337,6 @@ class ChatRouter:
         console.print("[bold blue]Starting a new chat session...[/bold blue]")
         console.print("[dim]⚠️  /new is not yet implemented.[/dim]")
         return True
-
-    def cmd_attach(self, args):
-        """/attach [file_path] [optional prompt]: Attach a file to the next request."""
-        from pathlib import Path as _Path
-
-        if not args:
-            # No path given — open the native OS file picker
-            console.print("[dim]Opening file picker...[/dim]")
-            file_path = _pick_file()
-            if not file_path:
-                console.print("[dim]No file selected.[/dim]")
-                return True
-            # Ask for an optional prompt after picking
-            from prompt_toolkit.formatted_text import FormattedText
-            prompt_text = _pt_session.prompt(
-                FormattedText([("ansicyan bold", f"Prompt for {file_path.name} (Enter to skip): ")])
-            ).strip() or "Please describe this file."
-        else:
-            file_path = _Path(args[0]).expanduser().resolve()
-            prompt_text = " ".join(args[1:]) if len(args) > 1 else "Please describe this file."
-
-        if not file_path.exists():
-            console.print(f"[red]File not found:[/red] {file_path}")
-            return True
-
-        size_kb = file_path.stat().st_size / 1024
-        console.print(f"[dim]📎 Attached: {file_path.name} ({size_kb:.1f} KB)[/dim]")
-
-        # Signal the chat loop to use file attachment for the next request
-        return {"attach": True, "path": file_path, "prompt": prompt_text}
-
     def cmd_reset(self, args):
         self.session.history = []
         self.session.save()
@@ -453,18 +406,81 @@ class ChatRouter:
                 console.print("")
 
             console.print(f"[dim]Total History: {len(self.session.history)} messages loaded.[/dim]")
+            # Show the updated prompt label immediately so user knows where they are
+            console.print(f"[bold cyan]You ({self.client.key_id} | {self.session.display_name}) > [/bold cyan]", end="")
+            console.print("[dim]← you are here[/dim]")
         else:
             console.print(f"[bold red]Error:[/bold red] Session ID '{target_id}' not found.")
         return True
 
     def cmd_retry(self, args):
-        """Deletes the last AI response and resends the last user prompt."""
-        console.print("[dim]⚠️  /retry is not yet implemented.[/dim]")
-        return True
+        """Removes the last AI response and re-sends the last user prompt."""
+        history = self.session.history
+        if len(history) < 2:
+            console.print("[yellow]Nothing to retry — no exchange in history.[/yellow]")
+            return True
+
+        # Find and remove the last model turn
+        if history[-1]["role"] != "model":
+            console.print("[yellow]Last message is not from AI — nothing to retry.[/yellow]")
+            return True
+
+        self.session.history = history[:-1]
+        self.session.save()
+        console.print("[dim]↩️  Last AI response removed. Retrying...[/dim]")
+        return {"retry": True}
 
     def cmd_save(self, args):
         """Exports the current conversation to a Markdown file."""
-        console.print("[dim]⚠️  /save is not yet implemented.[/dim]")
+        from pathlib import Path as _Path
+        from datetime import datetime as _dt
+
+        if not self.session.history:
+            console.print("[yellow]Nothing to save — session is empty.[/yellow]")
+            return True
+
+        # Resolve output path
+        if args:
+            out_path = _Path(args[0]).expanduser().resolve()
+        else:
+            safe_name = self.session.display_name.replace(" ", "_").replace("/", "-")[:40]
+            filename = f"{safe_name}_{self.session.session_id}.md"
+            out_path = self.session.base_dir / filename
+
+        # Build Markdown
+        lines = [
+            f"# {self.session.display_name}",
+            f"",
+            f"*Session:* `{self.session.session_id}`  ",
+            f"*Exported:* {_dt.now().strftime('%Y-%m-%d %H:%M')}",
+            f"",
+            "---",
+            "",
+        ]
+
+        turn_no = 1
+        for turn in self.session.history:
+            role = turn.get("role", "")
+            parts = turn.get("parts", [""])
+            text = parts[0] if isinstance(parts, list) else parts
+
+            if role == "user":
+                lines.append(f"## Turn {turn_no} — You")
+                lines.append("")
+                lines.append(text.strip())
+                lines.append("")
+            elif role == "model":
+                model_id = turn.get("metadata", {}).get("model", "")
+                model_label = f" *(via {model_id.split('/')[-1]})*" if model_id else ""
+                lines.append(f"### AI{model_label}")
+                lines.append("")
+                lines.append(text.strip())
+                lines.append("")
+                turn_no += 1
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text("\n".join(lines), encoding="utf-8")
+        console.print(f"[green]✅ Saved:[/green] {out_path}")
         return True
 
     def cmd_search(self, args):
@@ -508,8 +524,60 @@ class ChatRouter:
         return True
 
     def cmd_stats(self, args):
-        """Displays accumulated usage statistics for all keys/models."""
-        console.print("[dim]⚠️  /stats is not yet implemented.[/dim]")
+        """Displays today's accumulated token usage across all keys and models."""
+        from datetime import datetime as _dt
+        state = self.client.km._load_state()
+        usage = state.get("usage", {})
+
+        if not usage:
+            console.print("[dim]No usage data recorded yet.[/dim]")
+            return True
+
+        table = Table(title="📊 Today's Usage", show_lines=True)
+        table.add_column("Key", style="yellow")
+        table.add_column("Model", style="cyan")
+        table.add_column("Reqs", justify="right", style="magenta")
+        table.add_column("In", justify="right", style="green")
+        table.add_column("Out", justify="right", style="blue")
+        table.add_column("Status", justify="center")
+        table.add_column("Since", style="dim")
+
+        total_reqs = total_in = total_out = 0
+
+        for key_id, key_data in sorted(usage.items()):
+            models = key_data.get("models", {})
+            for model_id, entry in sorted(models.items()):
+                reqs = entry.get("request_count", 0)
+                inp  = entry.get("total_input_tokens", 0)
+                out  = entry.get("total_output_tokens", 0)
+                status = entry.get("status", "active")
+                window_start = entry.get("window_start", "")
+
+                status_cell = "[green]active[/green]" if status == "active" else "[red]exhausted[/red]"
+
+                since = ""
+                if window_start:
+                    try:
+                        since = _dt.fromisoformat(window_start).astimezone().strftime("%H:%M")
+                    except ValueError:
+                        pass
+
+                table.add_row(
+                    key_id,
+                    model_id.split("/")[-1],
+                    str(reqs), str(inp), str(out),
+                    status_cell, since
+                )
+                total_reqs += reqs
+                total_in   += inp
+                total_out  += out
+
+        console.print(table)
+        console.print(
+            f"[dim]Total today — Reqs: [magenta]{total_reqs}[/magenta]  "
+            f"In: [green]{total_in}[/green]  "
+            f"Out: [blue]{total_out}[/blue][/dim]"
+        )
         return True
 
     def cmd_switch_proj(self, args):
@@ -665,153 +733,6 @@ def _run_autoname(client, session, response_text):
             f"[dim]🏷️  Auto-named via [yellow]{client.key_id}[/yellow] | "
             f"[cyan]{lite_model.split('/')[-1]}[/cyan]: [bold]{clean_title}[/bold][/dim]"
         )
-
-def _pick_file():
-    """
-    Opens the native OS file picker and returns the selected Path, or None
-    if the user cancelled. Uses tkinter which ships with Python on all platforms.
-    On macOS the Finder sheet appears; on Windows the Explorer dialog; on Linux
-    the GTK or Tk dialog depending on the desktop.
-    """
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()          # hide the empty root window
-        root.call('wm', 'attributes', '.', '-topmost', True)  # bring to front
-        path_str = filedialog.askopenfilename(
-            title="Select a file to attach",
-            filetypes=[
-                ("All supported", "*.pdf *.jpg *.jpeg *.png *.gif *.webp "
-                                  "*.txt *.md *.py *.js *.ts *.json *.csv "
-                                  "*.yaml *.yml *.toml *.sh *.html *.css"),
-                ("PDF",           "*.pdf"),
-                ("Images",        "*.jpg *.jpeg *.png *.gif *.webp"),
-                ("Text / Code",   "*.txt *.md *.py *.js *.ts *.json *.csv"),
-                ("All files",     "*.*"),
-            ]
-        )
-        root.destroy()
-        # Return focus to the terminal so the user doesn't have to click back
-        try:
-            import subprocess, sys
-            if sys.platform == "darwin":
-                # Reactivate the terminal app that launched us
-                subprocess.run(
-                    ["osascript", "-e",
-                     'tell application "System Events" to set frontmost of '
-                     '(first process whose unix id is (do shell script "echo $PPID")) to true'],
-                    capture_output=True
-                )
-        except Exception:
-            pass
-        return Path(path_str) if path_str else None
-    except Exception as e:
-        return None
-
-
-SUPPORTED_MIME_TYPES = {
-    ".pdf":  "application/pdf",
-    ".jpg":  "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png":  "image/png",
-    ".gif":  "image/gif",
-    ".webp": "image/webp",
-}
-TEXT_EXTENSIONS = {".txt", ".md", ".py", ".js", ".ts", ".json", ".csv",
-                   ".yaml", ".yml", ".toml", ".sh", ".html", ".css"}
-
-
-def _build_file_part(file_path, prompt_text: str):
-    """
-    Builds a types.Content with role="user" containing the file and prompt.
-    Binary files (PDF, images) are sent as bytes with MIME type.
-    Text/code files are inlined as a text part.
-    Returns the Content object or raises ValueError for unsupported types.
-    """
-    from google.genai import types as _types
-    suffix = file_path.suffix.lower()
-
-    if suffix in SUPPORTED_MIME_TYPES:
-        mime = SUPPORTED_MIME_TYPES[suffix]
-        data = file_path.read_bytes()
-        return _types.Content(
-            role="user",
-            parts=[
-                _types.Part.from_bytes(data=data, mime_type=mime),
-                _types.Part(text=prompt_text),
-            ]
-        )
-    elif suffix in TEXT_EXTENSIONS or suffix == "":
-        # Extensionless files (e.g. .gitignore, Makefile, Dockerfile) treated as plain text
-        text_content = file_path.read_text(encoding="utf-8", errors="replace")
-        combined = (
-            f"File: {file_path.name}\n"
-            f"```\n{text_content}\n```\n\n"
-            f"{prompt_text}"
-        )
-        return _types.Content(
-            role="user",
-            parts=[_types.Part(text=combined)]
-        )
-    else:
-        raise ValueError(
-            f"Unsupported file type: {suffix}\n"
-            f"Supported: pdf, images (jpg/png/gif/webp), text/code files, and extensionless files"
-        )
-
-
-def _run_file_stream(client, session, rankings, model_id, file_path, prompt_text):
-    """Streams a one-shot file-attached request and saves only the text prompt to history."""
-    try:
-        file_part = _build_file_part(file_path, prompt_text)
-    except ValueError as e:
-        console.print(f"[red]❌ {e}[/red]")
-        return
-
-    # Save prompt text to history (not the file — one-shot only)
-    session.add_message("user", f"[attached: {file_path.name}] {prompt_text}")
-
-    response_text = ""
-    used_mid = model_id
-
-    for candidate in rankings:
-        used_mid = candidate["id"]
-        try:
-            key_before = client.key_id
-            console.print(f"[dim][API] stream_with_file | key={key_before} | model={used_mid.split('/')[-1]}[/dim]")
-            console.print(f"[bold green]AI ({key_before} | {used_mid.split('/')[-1]}) >[/bold green] ", end="")
-            for chunk in client.stream_with_file(
-                history=session.history[:-1],  # exclude the just-added user message
-                file_part=file_part,
-                system_instruction=session.system_instruction,
-                model_name=used_mid
-            ):
-                print(chunk, end="", flush=True)
-                response_text += chunk
-            print()
-            if client.key_id != key_before:
-                console.print(f"[dim](↑ served by {client.key_id} | {used_mid.split('/')[-1]} after key rotation)[/dim]")
-            break
-        except PermissionError as e:
-            if "MODEL_EXHAUSTED" in str(e):
-                console.print(f"\n[dim yellow]⚠️  {used_mid} exhausted. Falling back...[/dim yellow]")
-                response_text = ""
-                continue
-            raise
-    else:
-        console.print("[red]All models exhausted.[/red]")
-        session.history.pop()
-        return
-
-    session.add_message("model", response_text, model_id=used_mid)
-    try:
-        _run_autoname(client, session, response_text)
-    except Exception:
-        pass
-    _print_token_stats(client, client.last_meta, used_mid)
-
-
 def _read_input(prompt_label: str) -> str:
     """
     Reads user input via prompt_toolkit.
@@ -845,10 +766,15 @@ def _run_chat_loop(client, session, router, rankings, model_id):
             user_input = None
             continue
 
-        if isinstance(cmd_result, dict) and cmd_result.get("attach"):
-            _run_file_stream(client, session, rankings, model_id,
-                             cmd_result["path"], cmd_result["prompt"])
-            user_input = None
+        if isinstance(cmd_result, dict) and cmd_result.get("retry"):
+            # Re-use the last user message that's now the tail of history
+            if session.history and session.history[-1]["role"] == "user":
+                parts = session.history[-1].get("parts", [""])
+                user_input = parts[0] if isinstance(parts, list) else parts
+                # Pop it so the normal path re-adds it cleanly
+                session.history = session.history[:-1]
+            else:
+                user_input = None
             continue
 
         if cmd_result:
