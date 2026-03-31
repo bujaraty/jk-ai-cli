@@ -233,7 +233,7 @@ class ChatRouter:
             # (cmd, usage, description, ready)
             ("/search",  "/search [query]",     "Semantic search across all past sessions",                 True),
             ("/resume",  "/resume [No.]",       "List and resume a past session",                           True),
-            ("/name",    "/name [name]",        "Set display name for current session",                     True),
+            ("/name",    "/name [name]",        "Set name manually, or omit to auto-name with AI",          True),
             ("/branch",  "",                    "Fork current session into a new branch",                   True),
             ("/edit",    "/edit [No.]",         "Time-travel: edit a past prompt (truncate/replay/branch)", True),
             ("/export",  "/export [last [N]] [--format md|txt|json|pdf|docx] [path]",
@@ -565,10 +565,13 @@ class ChatRouter:
         return True
 
     def cmd_name(self, args):
-        """/name [Session Name]: Sets the display name for current session."""
+        """/name [name]: Set name manually, or omit to auto-name using AI."""
         if not args:
-            console.print("[red]Usage: /name My Awesome Chat[/red]")
-            return True
+            # No args — trigger AI auto-naming
+            if not self.session.history:
+                console.print("[yellow]Session has no history to name.[/yellow]")
+                return True
+            return {"autoname": True}
 
         new_name = " ".join(args)
         self.session.set_display_name(new_name)
@@ -946,24 +949,29 @@ def _print_token_stats(client, meta, model_id):
     )
     console.print(Columns([p1, p2]))
 
-def _run_autoname(client, session, response_text):
-    """Auto-names the session after the first exchange using a lite model."""
-    if not session.is_eligible_for_autoname():
-        return
-
-    # Pick the cheapest/fastest model for this background task
+def _do_autoname(client, session):
+    """
+    Generates and sets a session name using a lite model.
+    Uses the full history for context — works at any point in the conversation.
+    """
     lite_orch = Orchestrator(provider="google", tier="lite")
     lite_rankings = lite_orch.get_rankings(action="generateContent")
     lite_model = lite_rankings[0]["id"] if lite_rankings else None
     if not lite_model:
+        console.print("[yellow]No lite model available for auto-naming.[/yellow]")
         return
+
+    # Build a compact summary of the conversation for the naming prompt
+    history = session.history
+    first_user = next((m["parts"][0] for m in history if m["role"] == "user"), "")
+    last_ai    = next((m["parts"][0] for m in reversed(history) if m["role"] == "model"), "")
 
     with console.status("[dim]Generating session name...[/dim]"):
         naming_prompt = (
             "Summarize the user's intent in this conversation in "
             "exactly 3 to 5 words. No punctuation. "
-            f"\nUser: {session.history[0]['parts'][0]}"
-            f"\nAI: {response_text[:100]}"
+            f"\nUser: {first_user[:200]}"
+            f"\nAI: {last_ai[:100]}"
         )
         title, _ = client.generate_with_meta(
             prompt=naming_prompt,
@@ -976,6 +984,13 @@ def _run_autoname(client, session, response_text):
             f"[dim]🏷️  Auto-named via [yellow]{client.key_id}[/yellow] | "
             f"[cyan]{lite_model.split('/')[-1]}[/cyan]: [bold]{clean_title}[/bold][/dim]"
         )
+
+
+def _run_autoname(client, session, response_text):
+    """Auto-names the session after the first exchange (eligibility-gated)."""
+    if not session.is_eligible_for_autoname():
+        return
+    _do_autoname(client, session)
 def _read_input(prompt_label: str) -> str:
     """
     Reads user input via prompt_toolkit.
@@ -1006,6 +1021,14 @@ def _run_chat_loop(client, session, router, rankings, model_id):
 
         if isinstance(cmd_result, dict) and cmd_result.get("replay"):
             _handle_replay(client, session, rankings, cmd_result["prompts"], model_id)
+            user_input = None
+            continue
+
+        if isinstance(cmd_result, dict) and cmd_result.get("autoname"):
+            try:
+                _do_autoname(client, session)
+            except Exception as e:
+                console.print(f"[red]Auto-name failed:[/red] {e}")
             user_input = None
             continue
 
