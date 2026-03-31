@@ -8,6 +8,7 @@ echo "🚀 Installing JK-AI Workspace Tools..."
 # 1. Sync workspace dependencies
 echo "📦 Syncing workspace dependencies..."
 uv sync --all-packages
+uv sync --extra dev
 
 # # 2. Fix potential permission issues in the uv tools directory
 # # This addresses the 'Permission denied' error you encountered earlier
