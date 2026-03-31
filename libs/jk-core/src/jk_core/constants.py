@@ -10,6 +10,8 @@ CONFIG_FILE_PATH = Path(SHARED_CONFIG_PATH) / "config.yaml"
 PROMPTS_DIR = Path(SHARED_CONFIG_PATH) / "prompts"
 DEFAULT_IMAGE_DIR = Path.home() / "Downloads" / "jk-ai-images"
 DEFAULT_MODEL = "gemini-flash-latest"
+FONTS_DIR = Path(SHARED_CONFIG_PATH) / "fonts"
+THAI_FONT_PATH = FONTS_DIR / "NotoSansThai-Regular.ttf"
 
 def ensure_dirs():
     """Call once at app startup to create required directories."""

@@ -61,6 +61,25 @@ def ensure_folders():
     DEFAULT_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
     console.print(f"🖼  Default image dir: [yellow]{DEFAULT_IMAGE_DIR}[/yellow]")
 
+    # Fonts for PDF export
+    from jk_core.constants import FONTS_DIR, THAI_FONT_PATH
+    FONTS_DIR.mkdir(parents=True, exist_ok=True)
+    if not THAI_FONT_PATH.exists():
+        console.print("[dim]⬇️  Downloading Noto Sans Thai font for PDF export...[/dim]")
+        try:
+            import urllib.request
+            url = (
+                "https://github.com/google/fonts/raw/main/ofl/notosansthai/"
+                "NotoSansThai%5Bwdth%2Cwght%5D.ttf"
+            )
+            urllib.request.urlretrieve(url, THAI_FONT_PATH)
+            console.print(f"✨ Font saved at: [green]{THAI_FONT_PATH}[/green]")
+        except Exception as e:
+            console.print(f"[yellow]⚠️  Could not download font: {e}[/yellow]")
+            console.print("[dim]   PDF export will fall back to basic Latin rendering.[/dim]")
+    else:
+        console.print(f"ℹ️  Font already exists at: [dim]{THAI_FONT_PATH}[/dim]")
+
     console.print("\n[bold green]✅ System is ready![/bold green]")
     console.print(f"💡 [italic]Edit {CONFIG_FILE_PATH} to configure your projects.[/italic]")
 

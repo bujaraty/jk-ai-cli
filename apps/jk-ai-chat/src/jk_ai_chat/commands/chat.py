@@ -236,8 +236,8 @@ class ChatRouter:
             ("/name",    "/name [name]",        "Set display name for current session",                     True),
             ("/branch",  "",                    "Fork current session into a new branch",                   True),
             ("/edit",    "/edit [No.]",         "Time-travel: edit a past prompt (truncate/replay/branch)", True),
-            ("/export",  "/export [last [N]] [--format md|txt|json] [path]",
-                                             "Export last N exchanges in md, txt, or json",              True),
+            ("/export",  "/export [last [N]] [--format md|txt|json|pdf] [path]",
+                                             "Export last N exchanges in md, txt, json, or pdf",        True),
             ("/history", "/history [No.]",      "Display full conversation of current or a past session",   True),
             ("/undo",    "",                    "Remove the last exchange (You + AI) from history",         True),
             ("/switch",  "/switch [tier]",      "Change model tier mid-session (lite / normal / high)",     True),
@@ -288,7 +288,7 @@ class ChatRouter:
             if idx + 1 < len(remaining):
                 fmt = remaining[idx + 1].lower()
                 remaining = remaining[:idx] + remaining[idx + 2:]
-            if fmt not in ("md", "txt", "json"):
+            if fmt not in ("md", "txt", "json", "pdf"):
                 console.print("[red]Unknown format. Use: md, txt, or json.[/red]")
                 return True
 
@@ -369,6 +369,10 @@ class ChatRouter:
             }
             content_str = _json.dumps(payload, indent=2, ensure_ascii=False)
 
+        elif fmt == "pdf":
+            ext = ".pdf"
+            content_str = None  # PDF is written directly to file
+
         # --- Resolve output path ---
         if out_path is None:
             filename = f"{safe_name}_{label}{ext}"
@@ -377,7 +381,76 @@ class ChatRouter:
             out_path = out_path / f"{safe_name}_{label}{ext}"
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(content_str, encoding="utf-8")
+
+        if fmt == "pdf":
+            try:
+                from reportlab.lib.pagesizes import A4
+                from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+                from reportlab.lib.units import mm
+                from reportlab.lib import colors
+                from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+                from reportlab.lib.enums import TA_LEFT
+                from reportlab.pdfbase import pdfmetrics
+                from reportlab.pdfbase.ttfonts import TTFont
+                from jk_core.constants import THAI_FONT_PATH
+
+                # Register Unicode font if available (supports Thai and other scripts)
+                font_name = "Helvetica"  # default fallback
+                if THAI_FONT_PATH.exists():
+                    try:
+                        pdfmetrics.registerFont(TTFont("NotoSansThai", str(THAI_FONT_PATH)))
+                        font_name = "NotoSansThai"
+                    except Exception:
+                        pass  # font broken, fall back to Helvetica
+
+                doc = SimpleDocTemplate(
+                    str(out_path),
+                    pagesize=A4,
+                    leftMargin=20*mm, rightMargin=20*mm,
+                    topMargin=20*mm, bottomMargin=20*mm,
+                )
+                styles = getSampleStyleSheet()
+                title_style  = ParagraphStyle("Title",  fontName=font_name, fontSize=18, spaceAfter=6, leading=22)
+                h2_style     = ParagraphStyle("H2",     fontName=font_name, fontSize=13, spaceAfter=4, leading=18, spaceBefore=8)
+                h3_style     = ParagraphStyle("H3",     fontName=font_name, fontSize=11, spaceAfter=4, leading=16, textColor=colors.HexColor("#2e7d32"))
+                body_style   = ParagraphStyle("Body",   fontName=font_name, fontSize=10, spaceAfter=6, leading=16)
+                meta_style   = ParagraphStyle("Meta",   fontName=font_name, fontSize=9,  textColor=colors.grey)
+
+                story = [
+                    Paragraph(self.session.display_name, title_style),
+                    Paragraph(f"Exported: {_dt.now().strftime('%Y-%m-%d %H:%M')} &nbsp;·&nbsp; Exchanges: {label}", meta_style),
+                    Spacer(1, 4*mm),
+                    HRFlowable(width="100%", thickness=0.5, color=colors.lightgrey),
+                    Spacer(1, 4*mm),
+                ]
+
+                turn_no = 1
+                for turn in history:
+                    role  = turn.get("role", "")
+                    parts = turn.get("parts", [""])
+                    text  = (parts[0] if isinstance(parts, list) else parts).strip()
+                    # Escape XML special chars for reportlab
+                    safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+                    if role == "user":
+                        story.append(Paragraph(f"Turn {turn_no} — You", h2_style))
+                        story.append(Paragraph(safe, body_style))
+                        story.append(Spacer(1, 2*mm))
+                    elif role == "model":
+                        model_id = turn.get("metadata", {}).get("model", "")
+                        model_label = f" (via {model_id.split('/')[-1]})" if model_id else ""
+                        story.append(Paragraph(f"AI{model_label}", h3_style))
+                        story.append(Paragraph(safe, body_style))
+                        story.append(Spacer(1, 4*mm))
+                        turn_no += 1
+
+                doc.build(story)
+            except ImportError:
+                console.print("[red]❌ PDF export requires reportlab. Run: uv add reportlab[/red]")
+                return True
+        else:
+            out_path.write_text(content_str, encoding="utf-8")
+
         console.print(f"[green]✅ Exported ({fmt}):[/green] {out_path}")
         return True
 
