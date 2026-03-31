@@ -20,7 +20,7 @@ console = Console()
 
 SLASH_COMMANDS = [
     "/branch", "/copy", "/edit", "/help", "/history", "/latest",
-    "/model", "/name", "/new", "/proj", "/reset",
+    "/export", "/model", "/name", "/new", "/proj", "/reset",
     "/resume", "/retry", "/save", "/search", "/stats", "/switch",
     "/temp", "/undo",
 ]
@@ -85,6 +85,7 @@ class ChatRouter:
         commands = {
             "/branch": self.cmd_branch,
             "/help": self.cmd_help,
+            "/export": self.cmd_export,
             "/history": self.cmd_history,
             "/copy": self.cmd_copy,
             "/edit": self.cmd_edit,
@@ -235,6 +236,8 @@ class ChatRouter:
             ("/name",    "/name [name]",        "Set display name for current session",                     True),
             ("/branch",  "",                    "Fork current session into a new branch",                   True),
             ("/edit",    "/edit [No.]",         "Time-travel: edit a past prompt (truncate/replay/branch)", True),
+            ("/export",  "/export [last [N]] [--format md|txt|json] [path]",
+                                             "Export last N exchanges in md, txt, or json",              True),
             ("/history", "/history [No.]",      "Display full conversation of current or a past session",   True),
             ("/undo",    "",                    "Remove the last exchange (You + AI) from history",         True),
             ("/switch",  "/switch [tier]",      "Change model tier mid-session (lite / normal / high)",     True),
@@ -261,6 +264,121 @@ class ChatRouter:
 
         console.print(table)
         console.print("[dim]Tip: type 'exit' or '/exit' to quit.[/dim]")
+        return True
+
+    def cmd_export(self, args):
+        """/export [last [N]] [--format md|txt|json] [path]: Export part of the conversation."""
+        from pathlib import Path as _Path
+        from datetime import datetime as _dt
+        import json as _json
+
+        if not self.session.history:
+            console.print("[yellow]Nothing to export — session is empty.[/yellow]")
+            return True
+
+        # --- Parse arguments ---
+        remaining = list(args)
+        fmt = "md"
+        out_path = None
+        n_exchanges = None  # None = all
+
+        # --format flag
+        if "--format" in remaining:
+            idx = remaining.index("--format")
+            if idx + 1 < len(remaining):
+                fmt = remaining[idx + 1].lower()
+                remaining = remaining[:idx] + remaining[idx + 2:]
+            if fmt not in ("md", "txt", "json"):
+                console.print("[red]Unknown format. Use: md, txt, or json.[/red]")
+                return True
+
+        # 'last' keyword
+        if remaining and remaining[0].lower() == "last":
+            remaining.pop(0)
+            if remaining and remaining[0].isdigit():
+                n_exchanges = int(remaining.pop(0))
+            else:
+                n_exchanges = 1  # default: last 1 exchange
+
+        # Remaining arg = output path
+        if remaining:
+            out_path = _Path(remaining[0]).expanduser().resolve()
+
+        # --- Slice history ---
+        history = self.session.history
+        if n_exchanges is not None:
+            # Each exchange = 1 user + 1 model turn = 2 entries
+            history = history[-(n_exchanges * 2):]
+
+        if not history:
+            console.print("[yellow]No exchanges found to export.[/yellow]")
+            return True
+
+        # --- Build content ---
+        label = f"last_{n_exchanges}" if n_exchanges else "full"
+        safe_name = self.session.display_name.replace(" ", "_").replace("/", "-")[:30]
+
+        if fmt == "md":
+            ext = ".md"
+            lines = [
+                f"# {self.session.display_name}",
+                f"",
+                f"*Exported:* {_dt.now().strftime('%Y-%m-%d %H:%M')}  ",
+                f"*Exchanges:* {label}",
+                f"",
+                "---",
+                "",
+            ]
+            turn_no = 1
+            for turn in history:
+                role = turn.get("role", "")
+                parts = turn.get("parts", [""])
+                text = (parts[0] if isinstance(parts, list) else parts).strip()
+                if role == "user":
+                    lines += [f"## Turn {turn_no} — You", "", text, ""]
+                elif role == "model":
+                    model_id = turn.get("metadata", {}).get("model", "")
+                    label_md = f" *(via {model_id.split('/')[-1]})*" if model_id else ""
+                    lines += [f"### AI{label_md}", "", text, ""]
+                    turn_no += 1
+            content_str = "\n".join(lines)
+
+        elif fmt == "txt":
+            ext = ".txt"
+            lines = []
+            turn_no = 1
+            for turn in history:
+                role = turn.get("role", "")
+                parts = turn.get("parts", [""])
+                text = (parts[0] if isinstance(parts, list) else parts).strip()
+                if role == "user":
+                    lines += [f"[Turn {turn_no}] You:", text, ""]
+                elif role == "model":
+                    lines += ["AI:", text, ""]
+                    turn_no += 1
+            content_str = "\n".join(lines)
+
+        elif fmt == "json":
+            ext = ".json"
+            payload = {
+                "session_id": self.session.session_id,
+                "display_name": self.session.display_name,
+                "exported_at": _dt.now().isoformat(),
+                "exchanges": label,
+                "history": history,
+            }
+            content_str = _json.dumps(payload, indent=2, ensure_ascii=False)
+
+        # --- Resolve output path ---
+        if out_path is None:
+            filename = f"{safe_name}_{label}{ext}"
+            out_path = self.session.base_dir / filename
+        elif out_path.is_dir():
+            out_path = out_path / f"{safe_name}_{label}{ext}"
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(content_str, encoding="utf-8")
+        console.print(f"[green]✅ Exported ({fmt}):[/green] {out_path}")
         return True
 
     def cmd_history(self, args):
@@ -406,9 +524,6 @@ class ChatRouter:
                 console.print("")
 
             console.print(f"[dim]Total History: {len(self.session.history)} messages loaded.[/dim]")
-            # Show the updated prompt label immediately so user knows where they are
-            console.print(f"[bold cyan]You ({self.client.key_id} | {self.session.display_name}) > [/bold cyan]", end="")
-            console.print("[dim]← you are here[/dim]")
         else:
             console.print(f"[bold red]Error:[/bold red] Session ID '{target_id}' not found.")
         return True
