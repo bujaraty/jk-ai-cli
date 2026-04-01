@@ -561,7 +561,42 @@ class ChatRouter:
 
         return True
     def cmd_model_info(self, args):
-        """Shows detailed metadata of the currently active model."""
+        """Shows active model, score breakdown, and full rankings."""
+        rankings = self.orch.get_rankings(action="generateContent")
+        if not rankings:
+            console.print("[yellow]No model rankings available. Run 'jk-ai-init --probe' first.[/yellow]")
+            return True
+
+        best = rankings[0]
+
+        # Active model panel
+        reasons_str = "\n".join(f"  • {r}" for r in best["reasons"])
+        info = (
+            f"[bold cyan]Model:[/bold cyan]  [yellow]{best['id']}[/yellow]\n"
+            f"[bold cyan]Score:[/bold cyan]  [green]{best['score']}[/green]\n"
+            f"[bold cyan]Status:[/bold cyan] {best['status']}\n"
+            f"[bold cyan]Tier:[/bold cyan]   {self.orch.tier}\n"
+            f"[bold cyan]Logic:[/bold cyan]\n{reasons_str}"
+        )
+        console.print(Panel(info, title="[bold magenta]Active Model[/bold magenta]", expand=False))
+
+        # Full rankings table
+        if len(rankings) > 1:
+            table = Table(title="All Ranked Models", show_lines=True)
+            table.add_column("Rank", justify="center", style="dim")
+            table.add_column("Model", style="cyan")
+            table.add_column("Score", justify="right", style="green")
+            table.add_column("Status", justify="center")
+            for i, m in enumerate(rankings, 1):
+                status_color = "green" if m["status"] == "PASS" else "red" if m["status"] == "FAIL" else "dim"
+                table.add_row(
+                    str(i),
+                    m["id"].split("/")[-1],
+                    str(m["score"]),
+                    f"[{status_color}]{m['status']}[/{status_color}]"
+                )
+            console.print(table)
+
         return True
 
     def cmd_name(self, args):
